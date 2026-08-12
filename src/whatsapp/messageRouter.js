@@ -13,6 +13,7 @@ const moderationActions = require('./moderationActions');
 const antiLink = require('../moderation/antiLink');
 const moderationEngine = require('../moderation/moderationEngine');
 const agent = require('../ai/agent');
+const tts = require('../ai/tts');
 const { transcribeAndCleanup } = require('../ai/transcription');
 const { downloadVoiceToTemp } = require('./mediaDownload');
 const commandHandler = require('../commands/commandHandler');
@@ -31,9 +32,51 @@ function isVoiceMessage(message) {
   return !!message?.audioMessage;
 }
 
-function botIsMentioned(message, botPhone) {
-  const mentioned = allMentionedJids(message).map(jidToPhone);
-  return mentioned.includes(botPhone);
+function randomDelayMs(min, max) {
+  const lo = Math.min(min, max);
+  const hi = Math.max(min, max);
+  return Math.floor(lo + Math.random() * (hi - lo));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Comme pour isSenderAdmin, une mention peut arriver sous forme de LID alors
+ * que sock.user.id est un numéro (ou l'inverse) — une simple comparaison de
+ * chaîne rate alors la mention. On rassemble donc tous les identifiants
+ * plausibles du bot et on tente en plus une résolution LID<->numéro via le
+ * repository Baileys si le format ne correspond à aucun candidat direct.
+ */
+async function botIsMentioned(sock, message) {
+  const mentioned = allMentionedJids(message);
+  if (!mentioned.length) return false;
+
+  const botCandidates = new Set();
+  const add = (jid) => {
+    const u = jidToPhone(jid);
+    if (u) botCandidates.add(u);
+  };
+  add(sock.user?.id);
+  add(sock.user?.lid);
+
+  const mentionedPhones = mentioned.map(jidToPhone);
+  if (mentionedPhones.some((m) => botCandidates.has(m))) return true;
+
+  const mapping = sock?.signalRepository?.lidMapping;
+  if (!mapping) return false;
+  for (const raw of mentioned) {
+    try {
+      let alt = null;
+      if (raw.endsWith('@lid') && mapping.getPNForLID) alt = await mapping.getPNForLID(raw);
+      else if (raw.endsWith('@s.whatsapp.net') && mapping.getLIDForPN) alt = await mapping.getLIDForPN(raw);
+      if (alt && botCandidates.has(jidToPhone(alt))) return true;
+    } catch {
+      // ignore, on tente le candidat suivant
+    }
+  }
+  return false;
 }
 
 async function handleMessage(userId, sock, msg) {
@@ -120,8 +163,8 @@ async function handleMessage(userId, sock, msg) {
 
   // ── 6. Mention de l'agent → réponse conversationnelle ────────────────────
   if (group.ai_enabled) {
-    const botPhone = jidToPhone(normalizeJid(sock.user?.id));
-    if (botIsMentioned(message, botPhone)) {
+    const mentioned = await botIsMentioned(sock, message);
+    if (mentioned) {
       const relevantMessages = memoryManager.getRelevantContext(userId, groupJid, senderJid);
       const groupName = await groupMeta.getGroupName(sock, groupJid);
       const responseText = await agent.generateReply({
@@ -131,8 +174,26 @@ async function handleMessage(userId, sock, msg) {
         relevantMessages,
         userMessage: effectiveText,
       });
+
       if (responseText) {
-        await sock.sendMessage(groupJid, { text: responseText }, { quoted: msg });
+        const delay = randomDelayMs(config.aiReply.delayMinMs, config.aiReply.delayMaxMs);
+        await sleep(delay);
+
+        let sentAsVoice = false;
+        if (config.aiReply.voiceEnabled) {
+          try {
+            const audio = await tts.synthesizeFrench(responseText);
+            if (audio) {
+              await sock.sendMessage(groupJid, { audio, mimetype: 'audio/mpeg', ptt: true }, { quoted: msg });
+              sentAsVoice = true;
+            }
+          } catch (err) {
+            logger.warn({ groupJid, err: err.message }, 'Échec synthèse vocale — repli en texte');
+          }
+        }
+        if (!sentAsVoice) {
+          await sock.sendMessage(groupJid, { text: responseText }, { quoted: msg });
+        }
       }
       return; // une mention ne déclenche pas aussi une analyse de modération
     }
