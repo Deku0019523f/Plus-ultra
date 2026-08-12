@@ -26,6 +26,18 @@ module.exports = {
   commandPrefix: '.',
   browser: ['Ubuntu', 'Chrome', '22.04.4'],
 
+  // Si le VPS ne peut pas joindre GitHub pour vérifier la dernière version WA Web,
+  // fetchLatestBaileysVersion() retombe silencieusement sur une version repliée
+  // (voir sessionManager.resolveWaVersion). En cas d'échecs de pairing répétés,
+  // fixer ici une version connue-fonctionnelle, ex: WA_VERSION=2,3000,1023223821
+  waVersionOverride: process.env.WA_VERSION
+    ? process.env.WA_VERSION.split(',').map((n) => parseInt(n.trim(), 10))
+    : null,
+
+  telegram: {
+    botToken: process.env.TELEGRAM_BOT_TOKEN || '',
+  },
+
   botInfo: {
     logo: process.env.BOT_LOGO_URL || 'https://raw.githubusercontent.com/Deku0019523f/Deku-Analyse/main/Logo.png',
     sites: [
