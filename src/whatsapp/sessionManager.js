@@ -79,11 +79,6 @@ async function buildSocket(state, saveCreds) {
   return sock;
 }
 
-async function createSocket(userId) {
-  const { state, saveCreds } = await loadAuthState(userId);
-  return buildSocket(state, saveCreds);
-}
-
 /**
  * Démarre (ou reprend) la connexion WhatsApp d'un utilisateur et demande un
  * pairing code si la session n'est pas déjà enregistrée.
@@ -99,9 +94,10 @@ async function connectWhatsApp(userId, phoneNumber) {
   }
   reconnectAttempts.delete(userId);
 
-  const sock = await createSocket(userId);
+  const { state, saveCreds } = await loadAuthState(userId);
+  const sock = await buildSocket(state, saveCreds);
   activeSockets.set(userId, sock);
-  attachSocketHandlers(userId, sock);
+  attachSocketHandlers(userId, sock, state, saveCreds);
 
   db.updateUserSession(userId, {
     phoneNumber,
@@ -136,7 +132,7 @@ async function connectWhatsApp(userId, phoneNumber) {
   return { pairingCode };
 }
 
-function attachSocketHandlers(userId, sock) {
+function attachSocketHandlers(userId, sock, state, saveCreds) {
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect } = update;
 
@@ -173,11 +169,25 @@ function attachSocketHandlers(userId, sock) {
 
       if (code === DisconnectReason.restartRequired) {
         // Redémarrage normal juste après la validation du pairing code par
-        // WhatsApp : ce n'est PAS une erreur. Il faut reconnecter IMMÉDIATEMENT
-        // (sans backoff ni comptage de tentative) sous peine de bloquer
-        // l'appairage sur "Connexion...".
-        logger.info({ userId }, 'Redémarrage requis par WhatsApp (fin de pairing) — reconnexion immédiate');
-        reconnectAccount(userId);
+        // WhatsApp : ce n'est PAS une erreur. On reconnecte IMMÉDIATEMENT en
+        // réutilisant l'état d'authentification déjà en mémoire (state/saveCreds
+        // de CE socket), sans relire le disque : creds.update() écrit le fichier
+        // de façon asynchrone (fire-and-forget), donc rien ne garantit que
+        // l'écriture soit terminée à cet instant — une relecture disque ici
+        // pourrait à tort voir "registered: false" et abandonner une session
+        // pourtant valide.
+        logger.info({ userId }, 'Redémarrage requis par WhatsApp (fin de pairing) — reconnexion immédiate (session en mémoire)');
+        (async () => {
+          try {
+            const newSock = await buildSocket(state, saveCreds);
+            activeSockets.set(userId, newSock);
+            attachSocketHandlers(userId, newSock, state, saveCreds);
+            logger.info({ userId }, 'Compte reconnecté après redémarrage requis');
+          } catch (err) {
+            logger.error({ userId, err: err.message }, 'Échec reconnexion immédiate après restartRequired');
+            scheduleReconnect(userId);
+          }
+        })();
         return;
       }
 
@@ -247,7 +257,7 @@ async function reconnectAccount(userId) {
 
     const sock = await buildSocket(state, saveCreds);
     activeSockets.set(userId, sock);
-    attachSocketHandlers(userId, sock);
+    attachSocketHandlers(userId, sock, state, saveCreds);
     logger.info({ userId }, 'Compte reconnecté');
   } catch (err) {
     logger.error({ userId, err: err.message }, 'Échec de la reconnexion');
