@@ -53,7 +53,7 @@ Prérequis : Node.js ≥ 20, `build-essential` et `python3` sur le VPS (nécessa
 
 ```bash
 sudo apt-get update && sudo apt-get install -y build-essential python3
-git clone https://github.com/Deku0019523f/Plus-ultra.git && cd Plus-ultra
+git clone <votre-repo> ultra-agent && cd ultra-agent
 npm install
 cp .env.example .env
 ```
