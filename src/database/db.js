@@ -16,6 +16,17 @@ db.pragma('foreign_keys = ON');
 const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
 db.exec(schema);
 
+// Migration idempotente : sur une base déjà déployée, CREATE TABLE IF NOT EXISTS
+// n'ajoute pas les nouvelles colonnes à une table existante. On vérifie donc et
+// on complète au besoin (ne s'exécute qu'une seule fois par colonne manquante).
+function ensureColumn(table, column, ddl) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  }
+}
+ensureColumn('users', 'telegram_chat_id', 'telegram_chat_id TEXT');
+
 function now() {
   return Date.now();
 }
@@ -47,6 +58,24 @@ function getUserById(id) {
 function getUserByApiKey(apiKey) {
   if (!apiKey) return null;
   return db.prepare('SELECT * FROM users WHERE api_key = ?').get(apiKey) || null;
+}
+
+function getUserByTelegramChatId(chatId) {
+  if (!chatId) return null;
+  return db.prepare('SELECT * FROM users WHERE telegram_chat_id = ?').get(String(chatId)) || null;
+}
+
+/** Crée le compte s'il n'existe pas encore pour ce chat Telegram, sinon le retourne. */
+function findOrCreateUserByTelegramChatId(chatId) {
+  const existing = getUserByTelegramChatId(chatId);
+  if (existing) return existing;
+  const user = createUser();
+  db.prepare('UPDATE users SET telegram_chat_id = ?, updated_at = ? WHERE id = ?').run(
+    String(chatId),
+    now(),
+    user.id
+  );
+  return getUserById(user.id);
 }
 
 function updateUserSession(id, { phoneNumber, sessionPath, connectionStatus }) {
@@ -221,6 +250,8 @@ module.exports = {
   createUser,
   getUserById,
   getUserByApiKey,
+  getUserByTelegramChatId,
+  findOrCreateUserByTelegramChatId,
   updateUserSession,
   listUsersWithSessions,
   upsertGroup,

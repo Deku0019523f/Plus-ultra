@@ -6,6 +6,7 @@
 CREATE TABLE IF NOT EXISTS users (
   id              TEXT PRIMARY KEY,        -- identifiant interne (USER_001, ...)
   api_key         TEXT UNIQUE NOT NULL,
+  telegram_chat_id TEXT UNIQUE,
   phone_number    TEXT,
   session_path    TEXT,
   connection_status TEXT NOT NULL DEFAULT 'disconnected', -- pending | connected | disconnected | failed
