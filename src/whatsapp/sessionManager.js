@@ -21,6 +21,7 @@ const { sendWelcomeMessage } = require('./welcomeMessage');
 const events = new EventEmitter();
 const activeSockets = new Map(); // userId -> sock
 const reconnectAttempts = new Map(); // userId -> count
+const reconnectTimers = new Map(); // userId -> setTimeout handle
 
 // Rompt la dépendance circulaire avec messageRouter (chargé au premier message).
 let messageRouter = null;
@@ -29,8 +30,21 @@ function getMessageRouter() {
   return messageRouter;
 }
 
+function clearPendingReconnect(userId) {
+  if (reconnectTimers.has(userId)) {
+    clearTimeout(reconnectTimers.get(userId));
+    reconnectTimers.delete(userId);
+  }
+}
+
+/**
+ * Un socket présent dans activeSockets ne signifie pas encore "connecté" :
+ * il peut être en cours de pairing/handshake. La seule source fiable est
+ * l'état "connected" écrit en base lorsque l'événement 'open' est reçu.
+ */
 function isConnected(userId) {
-  return activeSockets.has(userId);
+  if (!activeSockets.has(userId)) return false;
+  return db.getUserById(userId)?.connection_status === 'connected';
 }
 
 function getSocket(userId) {
@@ -68,6 +82,7 @@ async function createSocket(userId) {
  */
 async function connectWhatsApp(userId, phoneNumber) {
   userStore.ensureUserDir(userId);
+  clearPendingReconnect(userId);
 
   if (activeSockets.has(userId)) {
     try { activeSockets.get(userId).end(undefined); } catch { /* déjà fermé */ }
@@ -132,15 +147,29 @@ function attachSocketHandlers(userId, sock) {
 
     if (connection === 'close') {
       const code = lastDisconnect?.error?.output?.statusCode;
+      // Ce socket est définitivement fermé : ne jamais le laisser trainer dans
+      // activeSockets, sous peine de faire croire à une connexion active
+      // (isConnected() vérifie aussi le statut DB, mais autant rester propre).
+      activeSockets.delete(userId);
       db.updateUserSession(userId, { connectionStatus: 'disconnected' });
       userStore.writeUserSnapshot(userId);
       logger.warn({ userId, code }, 'Connexion WhatsApp fermée');
       events.emit('disconnected', { userId, code });
 
       if (code === DisconnectReason.loggedOut) {
-        activeSockets.delete(userId);
+        clearPendingReconnect(userId);
         reconnectAttempts.delete(userId);
         events.emit('logged_out', { userId });
+        return;
+      }
+
+      if (code === DisconnectReason.restartRequired) {
+        // Redémarrage normal juste après la validation du pairing code par
+        // WhatsApp : ce n'est PAS une erreur. Il faut reconnecter IMMÉDIATEMENT
+        // (sans backoff ni comptage de tentative) sous peine de bloquer
+        // l'appairage sur "Connexion...".
+        logger.info({ userId }, 'Redémarrage requis par WhatsApp (fin de pairing) — reconnexion immédiate');
+        reconnectAccount(userId);
         return;
       }
 
@@ -177,10 +206,12 @@ function scheduleReconnect(userId) {
 
   const delay = Math.min(config.reconnect.baseDelayMs * attempts, config.reconnect.maxDelayMs);
   logger.info({ userId, attempt: attempts, delayMs: delay }, 'Reconnexion planifiée');
-  setTimeout(() => reconnectAccount(userId), delay);
+  const timer = setTimeout(() => reconnectAccount(userId), delay);
+  reconnectTimers.set(userId, timer);
 }
 
 async function reconnectAccount(userId) {
+  clearPendingReconnect(userId);
   const user = db.getUserById(userId);
   if (!user?.phone_number) return;
 
@@ -202,6 +233,7 @@ async function reconnectAccount(userId) {
 }
 
 function disconnectAccount(userId) {
+  clearPendingReconnect(userId);
   reconnectAttempts.delete(userId);
   if (activeSockets.has(userId)) {
     try { activeSockets.get(userId).end(undefined); } catch { /* déjà fermé */ }
