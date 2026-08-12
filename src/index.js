@@ -4,9 +4,16 @@ require('./database/db'); // initialise le schéma SQLite au démarrage
 const logger = require('./utils/logger');
 const server = require('./api/server');
 const sessionManager = require('./whatsapp/sessionManager');
+const telegramBot = require('./telegram/telegramBot');
 
 async function main() {
   server.start();
+
+  try {
+    telegramBot.start();
+  } catch (err) {
+    logger.error({ err: err.message }, 'Erreur au démarrage du bot Telegram — le serveur continue');
+  }
 
   try {
     await sessionManager.restoreAllSessions();
