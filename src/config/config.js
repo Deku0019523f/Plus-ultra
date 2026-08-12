@@ -65,6 +65,16 @@ module.exports = {
     maxWarnings: parseInt(process.env.MAX_WARNINGS, 10) || 3,
   },
 
+  // Délai aléatoire avant l'envoi d'une réponse conversationnelle de l'agent,
+  // pour éviter un timing instantané trop "robot". Défaut : 10-60s.
+  aiReply: {
+    delayMinMs: parseInt(process.env.AI_REPLY_DELAY_MIN_MS, 10) || 10000,
+    delayMaxMs: parseInt(process.env.AI_REPLY_DELAY_MAX_MS, 10) || 60000,
+    // Si activé, la réponse de l'agent est envoyée en vocal (TTS français)
+    // au lieu du texte, via l'endpoint public non-officiel de Google Translate.
+    voiceEnabled: process.env.AI_VOICE_REPLY === 'true',
+  },
+
   reconnect: {
     maxAttempts: 5,
     baseDelayMs: 5000,
