@@ -52,7 +52,7 @@ async function handleMessage(userId, sock, msg) {
   const isVoice = isVoiceMessage(message);
 
   // ── Détection admin (nécessaire pour les commandes ET les exemptions) ─────
-  const isAdmin = await groupMeta.isSenderAdmin(sock, groupJid, senderJid);
+  const isAdmin = await groupMeta.isSenderAdmin(sock, groupJid, senderJid, msg);
 
   // ── 1. Commandes (fonctionnent même si le groupe n'est pas encore activé,
   //      puisque .plus_ultra sert justement à l'activer) ──────────────────
