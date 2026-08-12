@@ -1,0 +1,61 @@
+'use strict';
+
+require('dotenv').config();
+const path = require('path');
+
+const ROOT = path.join(__dirname, '..', '..');
+const dataDir = process.env.DATA_DIR && process.env.DATA_DIR.trim()
+  ? process.env.DATA_DIR
+  : path.join(ROOT, 'data');
+
+function splitList(value, fallback) {
+  const raw = (value && value.trim()) || fallback;
+  return raw.split(',').map((v) => v.trim()).filter(Boolean);
+}
+
+module.exports = {
+  port: parseInt(process.env.PORT, 10) || 3000,
+  nodeEnv: process.env.NODE_ENV || 'development',
+  logLevel: process.env.LOG_LEVEL || 'info',
+
+  dataDir,
+  usersDir: path.join(dataDir, 'users'),
+  dbPath: (process.env.DB_PATH && process.env.DB_PATH.trim()) || path.join(dataDir, 'ultra-agent.sqlite'),
+
+  botName: process.env.BOT_NAME || 'Ultra Agent',
+  commandPrefix: '.',
+  browser: ['Ubuntu', 'Chrome', '22.04.4'],
+
+  botInfo: {
+    logo: process.env.BOT_LOGO_URL || 'https://raw.githubusercontent.com/Deku0019523f/Deku-Analyse/main/Logo.png',
+    sites: [
+      { label: 'Premium225.shop', desc: 'plateforme de vente en ligne' },
+      { label: 'Boostapi.store', desc: 'abonnés, likes & vues' },
+      { label: 'Mrateliers.store', desc: 'crée ta boutique en ligne' },
+    ],
+  },
+
+  groq: {
+    apiKey: process.env.GROQ_API_KEY || '',
+    textModels: splitList(
+      process.env.GROQ_TEXT_MODELS,
+      'llama-3.3-70b-versatile,openai/gpt-oss-safeguard-20b,llama-3.1-8b-instant,openai/gpt-oss-120b,meta-llama/llama-4-scout-17b-16e-instruct'
+    ),
+    voiceModel: process.env.GROQ_VOICE_MODEL || 'whisper-large-v3',
+  },
+
+  memory: {
+    limit: parseInt(process.env.MEMORY_LIMIT, 10) || 1000,
+    contextMessages: parseInt(process.env.MEMORY_CONTEXT_MESSAGES, 10) || 25,
+  },
+
+  moderation: {
+    maxWarnings: parseInt(process.env.MAX_WARNINGS, 10) || 3,
+  },
+
+  reconnect: {
+    maxAttempts: 5,
+    baseDelayMs: 5000,
+    maxDelayMs: 60000,
+  },
+};
