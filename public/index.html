@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ultra Agent — Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">
+      <span class="brand-mark">U+</span>
+      <span class="brand-name">ULTRA<br/>AGENT</span>
+    </div>
+    <nav class="rail-nav">
+      <button class="rail-btn is-active" data-view="connexion">
+        <span class="rail-dot"></span> Connexion
+      </button>
+      <button class="rail-btn" data-view="groupes">
+        <span class="rail-dot"></span> Groupes
+      </button>
+      <button class="rail-btn" data-view="aide">
+        <span class="rail-dot"></span> Aide
+      </button>
+    </nav>
+    <div class="rail-status" id="railStatus">
+      <span class="pill pill-off" id="railStatusPill">déconnecté</span>
+    </div>
+  </aside>
+
+  <main class="stage">
+
+    <!-- ── Vue Connexion ─────────────────────────────────────────────── -->
+    <section class="view is-active" id="view-connexion">
+      <header class="stage-head">
+        <h1>Connexion WhatsApp</h1>
+        <p>Relie un numéro à Ultra Agent par code de jumelage. Aucun scan de QR requis.</p>
+      </header>
+
+      <div class="hero-card">
+        <div class="hero-terminal">
+          <div class="terminal-label">CODE DE JUMELAGE</div>
+          <div class="terminal-code" id="pairingCode">— — — — — —</div>
+          <div class="terminal-scan"></div>
+        </div>
+
+        <form class="pairing-form" id="pairingForm">
+          <label for="phoneInput">Numéro WhatsApp (format international)</label>
+          <div class="input-row">
+            <input type="tel" id="phoneInput" placeholder="+225 07 00 00 00 00" required />
+            <button type="submit" id="pairingSubmit">Obtenir le code</button>
+          </div>
+          <p class="hint" id="pairingHint">Le compte doit rester connecté à Internet le temps de la validation dans WhatsApp → Appareils connectés.</p>
+        </form>
+      </div>
+
+      <div class="status-strip">
+        <div class="status-item">
+          <span class="status-key">Statut</span>
+          <span class="status-val" id="statusConnection">déconnecté</span>
+        </div>
+        <div class="status-item">
+          <span class="status-key">Numéro</span>
+          <span class="status-val mono" id="statusPhone">—</span>
+        </div>
+        <div class="status-item">
+          <span class="status-key">Identifiant</span>
+          <span class="status-val mono" id="statusUserId">—</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Vue Groupes ───────────────────────────────────────────────── -->
+    <section class="view" id="view-groupes">
+      <header class="stage-head">
+        <h1>Groupes</h1>
+        <p>Active Ultra Agent groupe par groupe. Chaque groupe garde sa propre mémoire et son propre règlement.</p>
+        <button class="btn-ghost" id="refreshGroups">Actualiser</button>
+      </header>
+
+      <div class="group-grid" id="groupGrid">
+        <div class="empty-state">Connecte d'abord un compte WhatsApp pour voir tes groupes ici.</div>
+      </div>
+    </section>
+
+    <!-- ── Détail groupe (panneau superposé) ────────────────────────── -->
+    <section class="view" id="view-groupe-detail">
+      <button class="btn-back" id="backToGroups">← Groupes</button>
+      <header class="stage-head">
+        <h1 id="detailName">Groupe</h1>
+        <p class="mono" id="detailJid">—</p>
+      </header>
+
+      <div class="detail-grid">
+        <div class="panel">
+          <h2>État</h2>
+          <div class="feature-rows" id="detailFeatures"></div>
+          <div class="detail-actions">
+            <button class="btn-primary" id="detailEnable">Activer</button>
+            <button class="btn-danger" id="detailDisable">Désactiver</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Mémoire</h2>
+          <div class="mem-bar-track">
+            <div class="mem-bar-fill" id="memBarFill"></div>
+          </div>
+          <p class="mono" id="memBarLabel">0 / 1000 messages</p>
+          <p class="hint" id="memArchiveLabel">0 archive</p>
+        </div>
+
+        <div class="panel panel-wide">
+          <h2>Règlement (description du groupe)</h2>
+          <p id="detailRules" class="rules-text">—</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Vue Aide ──────────────────────────────────────────────────── -->
+    <section class="view" id="view-aide">
+      <header class="stage-head">
+        <h1>Commandes</h1>
+        <p>À taper directement dans un groupe WhatsApp par un administrateur, sauf mention contraire.</p>
+      </header>
+      <div class="cmd-list">
+        <div class="cmd-row"><code>.plus_ultra</code><span>Active Ultra Agent dans le groupe</span></div>
+        <div class="cmd-row"><code>.plus_ultra_off</code><span>Désactive Ultra Agent</span></div>
+        <div class="cmd-row"><code>.lien @membre N</code><span>Autorise N liens à ce membre</span></div>
+        <div class="cmd-row"><code>.warn @membre</code><span>Ajoute un avertissement</span></div>
+        <div class="cmd-row"><code>.unwarn @membre</code><span>Retire un avertissement</span></div>
+        <div class="cmd-row"><code>.warns [@membre]</code><span>Affiche les avertissements — accessible à tous</span></div>
+        <div class="cmd-row"><code>.reglement</code><span>Actualise le règlement depuis la description</span></div>
+        <div class="cmd-row"><code>.status</code><span>Affiche l'état — accessible à tous</span></div>
+        <div class="cmd-row"><code>.help</code><span>Affiche cette liste — accessible à tous</span></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
