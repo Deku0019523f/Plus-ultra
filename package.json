@@ -1,0 +1,31 @@
+{
+  "name": "ultra-agent",
+  "version": "1.0.0",
+  "description": "Agent WhatsApp intelligent pour la moderation et l'animation de groupes (multi-comptes, multi-groupes)",
+  "main": "src/index.js",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:restart": "pm2 restart ultra-agent",
+    "pm2:logs": "pm2 logs ultra-agent",
+    "pm2:stop": "pm2 stop ultra-agent"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "groq-sdk": "^0.7.0",
+    "pino": "^9.4.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4",
+    "pino-pretty": "^11.2.2"
+  }
+}
