@@ -44,12 +44,11 @@ router.post('/pairing', async (req, res) => {
 });
 
 function getSockOr409(req, res) {
-  const sock = sessionManager.getSocket(req.user.id);
-  if (!sock) {
+  if (!sessionManager.isConnected(req.user.id)) {
     res.status(409).json({ error: 'Aucun compte WhatsApp connecté pour le moment.' });
     return null;
   }
-  return sock;
+  return sessionManager.getSocket(req.user.id);
 }
 
 router.get('/groups', async (req, res) => {
