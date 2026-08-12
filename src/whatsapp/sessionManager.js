@@ -56,8 +56,55 @@ async function loadAuthState(userId) {
   return useMultiFileAuthState(sessionPath);
 }
 
+/**
+ * fetchLatestBaileysVersion() ne lève PAS d'exception si le GitHub raw
+ * (source de la version WA Web) est injoignable depuis le VPS : elle retombe
+ * silencieusement sur la version figée dans le package (isLatest: false).
+ * Une version WA Web obsolète peut faire échouer l'enregistrement du pairing
+ * SANS jamais notifier le téléphone — exactement le symptôme observé
+ * (code généré, rien ne se passe, timeout 408 après ~2min).
+ * On log donc explicitement le résultat, et on permet un override manuel
+ * via WA_VERSION si le fetch échoue de façon récurrente.
+ */
+async function resolveWaVersion() {
+  if (config.waVersionOverride) {
+    logger.warn(
+      { version: config.waVersionOverride },
+      'Version WA Web forcée via WA_VERSION (override manuel)'
+    );
+    return config.waVersionOverride;
+  }
+
+  try {
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    if (!isLatest) {
+      logger.warn(
+        { version },
+        'Impossible de confirmer la dernière version WA Web (fetch GitHub probablement bloqué depuis le VPS) — utilisation de la version repliée du package. Si le pairing échoue en boucle, vérifie la connectivité sortante du VPS vers github.com, ou fixe WA_VERSION manuellement.'
+      );
+    } else {
+      logger.info({ version }, 'Version WA Web confirmée à jour');
+    }
+    return version;
+  } catch (err) {
+    logger.error({ err: err.message }, 'Échec total de la récupération de version WA Web');
+    throw err;
+  }
+}
+
+const DISCONNECT_REASON_NAMES = {
+  [DisconnectReason.badSession]: 'badSession',
+  [DisconnectReason.connectionClosed]: 'connectionClosed',
+  [DisconnectReason.connectionLost]: 'connectionLost',
+  [DisconnectReason.connectionReplaced]: 'connectionReplaced',
+  [DisconnectReason.loggedOut]: 'loggedOut',
+  [DisconnectReason.multideviceMismatch]: 'multideviceMismatch',
+  [DisconnectReason.restartRequired]: 'restartRequired',
+  [DisconnectReason.timedOut]: 'timedOut',
+};
+
 async function buildSocket(state, saveCreds) {
-  const { version } = await fetchLatestBaileysVersion();
+  const version = await resolveWaVersion();
   const baileysLogger = pino({ level: 'silent' });
 
   const sock = makeWASocket({
@@ -71,12 +118,19 @@ async function buildSocket(state, saveCreds) {
     browser: config.browser,
     syncFullHistory: false,
     markOnlineOnConnect: false,
-    connectTimeoutMs: 20000,
-    defaultQueryTimeoutMs: 20000,
+    connectTimeoutMs: 45000,
+    defaultQueryTimeoutMs: 45000,
+    keepAliveIntervalMs: 15000,
+    retryRequestDelayMs: 500,
   });
 
   sock.ev.on('creds.update', saveCreds);
   return sock;
+}
+
+async function createSocket(userId) {
+  const { state, saveCreds } = await loadAuthState(userId);
+  return buildSocket(state, saveCreds);
 }
 
 /**
@@ -94,10 +148,9 @@ async function connectWhatsApp(userId, phoneNumber) {
   }
   reconnectAttempts.delete(userId);
 
-  const { state, saveCreds } = await loadAuthState(userId);
-  const sock = await buildSocket(state, saveCreds);
+  const sock = await createSocket(userId);
   activeSockets.set(userId, sock);
-  attachSocketHandlers(userId, sock, state, saveCreds);
+  attachSocketHandlers(userId, sock);
 
   db.updateUserSession(userId, {
     phoneNumber,
@@ -132,7 +185,7 @@ async function connectWhatsApp(userId, phoneNumber) {
   return { pairingCode };
 }
 
-function attachSocketHandlers(userId, sock, state, saveCreds) {
+function attachSocketHandlers(userId, sock) {
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect } = update;
 
@@ -157,7 +210,10 @@ function attachSocketHandlers(userId, sock, state, saveCreds) {
       activeSockets.delete(userId);
       db.updateUserSession(userId, { connectionStatus: 'disconnected' });
       userStore.writeUserSnapshot(userId);
-      logger.warn({ userId, code }, 'Connexion WhatsApp fermée');
+      logger.warn(
+        { userId, code, reason: DISCONNECT_REASON_NAMES[code] || 'inconnue' },
+        'Connexion WhatsApp fermée'
+      );
       events.emit('disconnected', { userId, code });
 
       if (code === DisconnectReason.loggedOut) {
@@ -169,25 +225,11 @@ function attachSocketHandlers(userId, sock, state, saveCreds) {
 
       if (code === DisconnectReason.restartRequired) {
         // Redémarrage normal juste après la validation du pairing code par
-        // WhatsApp : ce n'est PAS une erreur. On reconnecte IMMÉDIATEMENT en
-        // réutilisant l'état d'authentification déjà en mémoire (state/saveCreds
-        // de CE socket), sans relire le disque : creds.update() écrit le fichier
-        // de façon asynchrone (fire-and-forget), donc rien ne garantit que
-        // l'écriture soit terminée à cet instant — une relecture disque ici
-        // pourrait à tort voir "registered: false" et abandonner une session
-        // pourtant valide.
-        logger.info({ userId }, 'Redémarrage requis par WhatsApp (fin de pairing) — reconnexion immédiate (session en mémoire)');
-        (async () => {
-          try {
-            const newSock = await buildSocket(state, saveCreds);
-            activeSockets.set(userId, newSock);
-            attachSocketHandlers(userId, newSock, state, saveCreds);
-            logger.info({ userId }, 'Compte reconnecté après redémarrage requis');
-          } catch (err) {
-            logger.error({ userId, err: err.message }, 'Échec reconnexion immédiate après restartRequired');
-            scheduleReconnect(userId);
-          }
-        })();
+        // WhatsApp : ce n'est PAS une erreur. Il faut reconnecter IMMÉDIATEMENT
+        // (sans backoff ni comptage de tentative) sous peine de bloquer
+        // l'appairage sur "Connexion...".
+        logger.info({ userId }, 'Redémarrage requis par WhatsApp (fin de pairing) — reconnexion immédiate');
+        reconnectAccount(userId);
         return;
       }
 
@@ -257,7 +299,7 @@ async function reconnectAccount(userId) {
 
     const sock = await buildSocket(state, saveCreds);
     activeSockets.set(userId, sock);
-    attachSocketHandlers(userId, sock, state, saveCreds);
+    attachSocketHandlers(userId, sock);
     logger.info({ userId }, 'Compte reconnecté');
   } catch (err) {
     logger.error({ userId, err: err.message }, 'Échec de la reconnexion');
