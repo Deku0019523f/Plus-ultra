@@ -51,9 +51,12 @@ function getSocket(userId) {
   return activeSockets.get(userId) || null;
 }
 
-async function createSocket(userId) {
+async function loadAuthState(userId) {
   const sessionPath = userStore.sessionPath(userId);
-  const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+  return useMultiFileAuthState(sessionPath);
+}
+
+async function buildSocket(state, saveCreds) {
   const { version } = await fetchLatestBaileysVersion();
   const baileysLogger = pino({ level: 'silent' });
 
@@ -74,6 +77,11 @@ async function createSocket(userId) {
 
   sock.ev.on('creds.update', saveCreds);
   return sock;
+}
+
+async function createSocket(userId) {
+  const { state, saveCreds } = await loadAuthState(userId);
+  return buildSocket(state, saveCreds);
 }
 
 /**
@@ -222,7 +230,22 @@ async function reconnectAccount(userId) {
   }
 
   try {
-    const sock = await createSocket(userId);
+    const { state, saveCreds } = await loadAuthState(userId);
+
+    if (!state.creds?.registered) {
+      // Session jamais finalisée (pairing jamais entré ou jamais abouti) :
+      // il n'y a rien de valide à "reconnecter". Retenter quand même reviendrait
+      // à spammer WhatsApp d'une connexion vouée à l'échec (401 quasi instantané)
+      // à chaque redémarrage — et ce type de trafic répété est justement ce que
+      // WhatsApp détecte comme abusif.
+      logger.warn({ userId }, 'Session jamais enregistrée — reconnexion automatique annulée, nouveau pairing requis');
+      db.updateUserSession(userId, { connectionStatus: 'failed' });
+      userStore.writeUserSnapshot(userId);
+      reconnectAttempts.delete(userId);
+      return;
+    }
+
+    const sock = await buildSocket(state, saveCreds);
     activeSockets.set(userId, sock);
     attachSocketHandlers(userId, sock);
     logger.info({ userId }, 'Compte reconnecté');
