@@ -15,4 +15,8 @@ function consume(groupJid, userId, memberJid, count = 1) {
   return db.consumeLinkQuota(groupJid, userId, memberJid, count);
 }
 
-module.exports = { authorize, get, consume };
+function resetUsage(groupJid, userId, memberJid) {
+  return db.resetLinkUsage(groupJid, userId, memberJid);
+}
+
+module.exports = { authorize, get, consume, resetUsage };

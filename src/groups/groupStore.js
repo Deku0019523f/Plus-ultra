@@ -38,6 +38,14 @@ function writeGroupConfigSnapshot(userId, groupJid) {
     maxWarnings: row.max_warnings,
     memoryLimit: row.memory_limit,
     rules: row.rules || '',
+    antispamEnabled: !!row.antispam_enabled,
+    antispamMaxMsgs: row.antispam_max_msgs,
+    antispamWindowSec: row.antispam_window_sec,
+    antimediaEnabled: !!row.antimedia_enabled,
+    welcomeEnabled: !!row.welcome_enabled,
+    welcomeMessage: row.welcome_message || '',
+    antibotEnabled: !!row.antibot_enabled,
+    voiceEnabled: row.voice_enabled === null ? null : !!row.voice_enabled,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -71,6 +79,13 @@ function updateRules(userId, groupJid, rules) {
   return row;
 }
 
+/** Point d'entrée générique pour tous les toggles/réglages de groupe (antispam, antimedia, bienvenue, antibot, vocal...). */
+function updateSettings(userId, groupJid, patch) {
+  const row = db.upsertGroup(groupJid, userId, patch);
+  writeGroupConfigSnapshot(userId, groupJid);
+  return row;
+}
+
 /** Le seul point d'entrée pour lire un groupe : impose l'appartenance à userId. */
 function getOwnedGroup(userId, groupJid) {
   return db.getGroup(groupJid, userId);
@@ -84,5 +99,6 @@ module.exports = {
   activateGroup,
   deactivateGroup,
   updateRules,
+  updateSettings,
   getOwnedGroup,
 };
