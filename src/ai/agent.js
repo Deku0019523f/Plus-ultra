@@ -1,7 +1,7 @@
 'use strict';
 
 const groqClient = require('./groqClient');
-const { buildAgentSystemPrompt } = require('./prompts');
+const { buildAgentSystemPrompt, truncate, MAX_USER_MESSAGE_CHARS } = require('./prompts');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 
@@ -22,7 +22,7 @@ async function generateReply({ groupName, rules, userName, relevantMessages, use
     const { content, model } = await groqClient.chatComplete({
       messages: [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage },
+        { role: 'user', content: truncate(userMessage, MAX_USER_MESSAGE_CHARS) },
       ],
       temperature: 0.5,
       maxTokens: 400,

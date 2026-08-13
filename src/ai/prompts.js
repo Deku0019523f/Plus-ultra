@@ -1,13 +1,35 @@
 'use strict';
 
+// Limites défensives : un contexte non borné (transcription vocale longue,
+// message collé volumineux, etc.) peut faire exploser le nombre de tokens du
+// prompt bien au-delà des plafonds TPM des modèles Groq (cf. erreurs 413
+// "Request too large"). On tronque donc par message et au total.
+const MAX_MESSAGE_CHARS = 300;
+const MAX_CONTEXT_CHARS = 4000;
+const MAX_USER_MESSAGE_CHARS = 2000;
+
+function truncate(text, max) {
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
 function formatContext(relevantMessages) {
   if (!relevantMessages?.length) return '(aucun contexte récent)';
-  return relevantMessages
-    .map((m) => {
-      const text = m.type === 'audio' ? (m.transcription || '[audio]') : m.content;
-      return `${m.name || m.userId}: ${text}`;
-    })
-    .join('\n');
+
+  // On part des messages les plus récents (les plus pertinents) et on
+  // s'arrête dès que le budget de caractères est atteint, plutôt que de
+  // tout inclure et risquer un prompt trop grand.
+  const ordered = [...relevantMessages].reverse();
+  const lines = [];
+  let total = 0;
+  for (const m of ordered) {
+    const text = m.type === 'audio' ? (m.transcription || '[audio]') : m.content;
+    const line = `${m.name || m.userId}: ${truncate(text, MAX_MESSAGE_CHARS)}`;
+    if (total + line.length > MAX_CONTEXT_CHARS) break;
+    lines.push(line);
+    total += line.length;
+  }
+  return lines.length ? lines.reverse().join('\n') : '(aucun contexte récent)';
 }
 
 /** Prompt système de l'agent conversationnel — section 19 du cahier des charges. */
@@ -63,4 +85,4 @@ Si le message ne viole rien, réponds {"violation": false, "rule": "", "severity
 N'invente jamais une règle absente du règlement ou des règles système ci-dessus.`;
 }
 
-module.exports = { buildAgentSystemPrompt, buildModerationPrompt, formatContext };
+module.exports = { buildAgentSystemPrompt, buildModerationPrompt, formatContext, truncate, MAX_USER_MESSAGE_CHARS };
