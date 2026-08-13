@@ -7,7 +7,7 @@ const linkAuth = require('../groups/linkAuth');
 const memoryManager = require('../memory/memoryManager');
 const groupMeta = require('../whatsapp/groupMeta');
 const moderationActions = require('../whatsapp/moderationActions');
-const { firstMentionedJid, jidToPhone } = require('../utils/jid');
+const { firstMentionedJid, jidToPhone, resolveToPhoneJid } = require('../utils/jid');
 const logger = require('../utils/logger');
 
 const ADMIN_ONLY_MSG = '❌ Cette commande est réservée aux administrateurs.';
@@ -18,8 +18,18 @@ function parseCommand(text) {
   return { cmd: cmdRaw.toLowerCase(), args: rest, rawText: text };
 }
 
-async function reply(sock, groupJid, text) {
-  await sock.sendMessage(groupJid, { text });
+async function reply(sock, groupJid, text, mentions) {
+  await sock.sendMessage(groupJid, { text, ...(mentions?.length ? { mentions } : {}) });
+}
+
+/**
+ * Résout un JID (LID inclus) vers le numéro affiché en @mention, et renvoie
+ * à la fois le texte "@numéro" et le JID à mettre dans `mentions` pour que
+ * WhatsApp rende une vraie mention cliquable (et pas juste du texte brut).
+ */
+async function buildMention(sock, jid) {
+  const resolved = await resolveToPhoneJid(sock, jid);
+  return { text: `@${jidToPhone(resolved)}`, jid: resolved };
 }
 
 async function handleCommand(ctx) {
@@ -91,61 +101,70 @@ async function cmdDeactivate({ sock, userId, groupJid }) {
 }
 
 async function cmdAuthorizeLink({ sock, userId, groupJid, senderJid, parsed }) {
-  const memberJid = firstMentionedJid(parsed.message);
+  const rawMemberJid = firstMentionedJid(parsed.message);
   const n = parseInt(parsed.args.find((a) => /^\d+$/.test(a)) || '', 10);
 
-  if (!memberJid || !Number.isFinite(n) || n < 0) {
+  if (!rawMemberJid || !Number.isFinite(n) || n < 0) {
     await reply(sock, groupJid, 'Usage : .lien @membre <nombre>');
     return;
   }
 
+  const memberJid = await resolveToPhoneJid(sock, rawMemberJid);
   linkAuth.authorize(groupJid, userId, memberJid, n, senderJid);
-  await reply(sock, groupJid, `✅ @${jidToPhone(memberJid)} peut désormais envoyer ${n} lien(s) dans ce groupe.`);
+  const mention = await buildMention(sock, memberJid);
+  await reply(sock, groupJid, `✅ ${mention.text} peut désormais envoyer ${n} lien(s) dans ce groupe.`, [mention.jid]);
 }
 
 async function cmdWarn({ sock, userId, groupJid, parsed }) {
-  const memberJid = firstMentionedJid(parsed.message);
-  if (!memberJid) {
+  const rawMemberJid = firstMentionedJid(parsed.message);
+  if (!rawMemberJid) {
     await reply(sock, groupJid, 'Usage : .warn @membre');
     return;
   }
+  const memberJid = await resolveToPhoneJid(sock, rawMemberJid);
+  const mention = await buildMention(sock, memberJid);
 
   const group = groupStore.getOwnedGroup(userId, groupJid);
   const maxWarnings = group?.max_warnings || config.moderation.maxWarnings;
   const { count, limitReached } = warnings.warn(groupJid, userId, memberJid, maxWarnings);
 
   if (!limitReached) {
-    await reply(sock, groupJid, `⚠️ Avertissement ajouté : @${jidToPhone(memberJid)} est à ${count}/${maxWarnings}.`);
+    await reply(sock, groupJid, `⚠️ Avertissement ajouté : ${mention.text} est à ${count}/${maxWarnings}.`, [mention.jid]);
     return;
   }
 
   await reply(
     sock,
     groupJid,
-    `🚫 SANCTION\n\n@${jidToPhone(memberJid)} a atteint ${count}/${maxWarnings} avertissements.\n\nLe membre va être retiré du groupe.`
+    `🚫 SANCTION\n\n${mention.text} a atteint ${count}/${maxWarnings} avertissements.\n\nLe membre va être retiré du groupe.`,
+    [mention.jid]
   );
-  const result = await moderationActions.kickMember(sock, groupJid, memberJid);
+  const result = await moderationActions.kickMember(sock, groupJid, rawMemberJid);
   if (!result.ok) await reply(sock, groupJid, result.reason);
 }
 
 async function cmdUnwarn({ sock, userId, groupJid, parsed }) {
-  const memberJid = firstMentionedJid(parsed.message);
-  if (!memberJid) {
+  const rawMemberJid = firstMentionedJid(parsed.message);
+  if (!rawMemberJid) {
     await reply(sock, groupJid, 'Usage : .unwarn @membre');
     return;
   }
+  const memberJid = await resolveToPhoneJid(sock, rawMemberJid);
+  const mention = await buildMention(sock, memberJid);
   const { count } = warnings.unwarn(groupJid, userId, memberJid);
-  await reply(sock, groupJid, `✅ Avertissement retiré : @${jidToPhone(memberJid)} est maintenant à ${count}.`);
+  await reply(sock, groupJid, `✅ Avertissement retiré : ${mention.text} est maintenant à ${count}.`, [mention.jid]);
 }
 
 async function cmdListWarns({ sock, userId, groupJid, parsed }) {
-  const memberJid = firstMentionedJid(parsed.message);
+  const rawMemberJid = firstMentionedJid(parsed.message);
   const group = groupStore.getOwnedGroup(userId, groupJid);
   const maxWarnings = group?.max_warnings || config.moderation.maxWarnings;
 
-  if (memberJid) {
+  if (rawMemberJid) {
+    const memberJid = await resolveToPhoneJid(sock, rawMemberJid);
+    const mention = await buildMention(sock, memberJid);
     const count = warnings.get(groupJid, userId, memberJid);
-    await reply(sock, groupJid, `⚠️ @${jidToPhone(memberJid)} : ${count}/${maxWarnings} avertissement(s).`);
+    await reply(sock, groupJid, `⚠️ ${mention.text} : ${count}/${maxWarnings} avertissement(s).`, [mention.jid]);
     return;
   }
 
@@ -155,7 +174,7 @@ async function cmdListWarns({ sock, userId, groupJid, parsed }) {
     return;
   }
   const lines = list.map((w) => `• @${jidToPhone(w.memberJid)} — ${w.count}/${maxWarnings}`);
-  await reply(sock, groupJid, `⚠️ AVERTISSEMENTS DU GROUPE\n\n${lines.join('\n')}`);
+  await reply(sock, groupJid, `⚠️ AVERTISSEMENTS DU GROUPE\n\n${lines.join('\n')}`, list.map((w) => w.memberJid));
 }
 
 async function cmdRefreshRules({ sock, userId, groupJid }) {
