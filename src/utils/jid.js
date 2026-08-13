@@ -54,6 +54,27 @@ function allMentionedJids(message) {
   );
 }
 
+/**
+ * Résout un JID vers sa forme "numéro de téléphone" (@s.whatsapp.net) quand
+ * c'est un LID, via le repository Baileys — pour afficher/mentionner le vrai
+ * numéro plutôt que l'identifiant LID (illisible et non reconnu comme
+ * contact). Retourne le JID d'origine si déjà un numéro ou si la résolution
+ * échoue (aucune garantie de disponibilité selon la version de Baileys).
+ */
+async function resolveToPhoneJid(sock, jid) {
+  if (!jid || jid.endsWith('@s.whatsapp.net')) return jid;
+  try {
+    const mapping = sock?.signalRepository?.lidMapping;
+    if (jid.endsWith('@lid') && mapping?.getPNForLID) {
+      const pn = await mapping.getPNForLID(jid);
+      if (pn) return pn;
+    }
+  } catch {
+    // pas de mapping disponible, on retombe sur le JID d'origine
+  }
+  return jid;
+}
+
 module.exports = {
   isGroupJid,
   isValidUserJid,
@@ -64,4 +85,5 @@ module.exports = {
   normalizeJid,
   firstMentionedJid,
   allMentionedJids,
+  resolveToPhoneJid,
 };
