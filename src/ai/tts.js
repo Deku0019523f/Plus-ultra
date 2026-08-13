@@ -1,6 +1,15 @@
 'use strict';
 
+const fs = require('fs/promises');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const ffmpegPath = require('ffmpeg-static');
 const logger = require('../utils/logger');
+
+const execFileAsync = promisify(execFile);
 
 // L'endpoint public translate.google.com/translate_tts n'exige pas de clé API,
 // mais n'est pas une API officiellement supportée par Google : il limite la
@@ -63,4 +72,45 @@ async function synthesizeFrench(text) {
   return Buffer.concat(buffers);
 }
 
-module.exports = { synthesizeFrench };
+/**
+ * Convertit un buffer MP3 en OGG/Opus mono 16kHz — le format que WhatsApp
+ * exige pour rendre un message comme un vocal natif (bulle + forme d'onde)
+ * quand on l'envoie avec `ptt: true`. Un MP3 brut est accepté sans erreur par
+ * l'API Baileys mais WhatsApp affiche alors "souci avec le fichier audio".
+ */
+async function convertToOggOpus(mp3Buffer) {
+  const tmpDir = os.tmpdir();
+  const id = crypto.randomBytes(6).toString('hex');
+  const inputPath = path.join(tmpDir, `ua-tts-${id}.mp3`);
+  const outputPath = path.join(tmpDir, `ua-tts-${id}.ogg`);
+
+  try {
+    await fs.writeFile(inputPath, mp3Buffer);
+    await execFileAsync(ffmpegPath, [
+      '-y',
+      '-i', inputPath,
+      '-ac', '1',
+      '-ar', '16000',
+      '-c:a', 'libopus',
+      '-b:a', '32k',
+      outputPath,
+    ]);
+    return await fs.readFile(outputPath);
+  } finally {
+    await fs.rm(inputPath, { force: true }).catch(() => {});
+    await fs.rm(outputPath, { force: true }).catch(() => {});
+  }
+}
+
+/**
+ * Synthétise un texte en vocal français prêt à être envoyé à WhatsApp
+ * (`{ audio, mimetype: 'audio/ogg; codecs=opus', ptt: true }`).
+ * Retourne null si le texte est vide.
+ */
+async function synthesizeFrenchVoiceNote(text) {
+  const mp3 = await synthesizeFrench(text);
+  if (!mp3) return null;
+  return convertToOggOpus(mp3);
+}
+
+module.exports = { synthesizeFrench, synthesizeFrenchVoiceNote };
