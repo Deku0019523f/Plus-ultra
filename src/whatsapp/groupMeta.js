@@ -100,6 +100,26 @@ async function getGroupName(sock, groupJid) {
   return meta.subject || groupJid;
 }
 
+/**
+ * Retrouve le JID exact tel qu'il apparaît dans les participants du groupe
+ * (meta.participants[].id) à partir de n'importe quel JID candidat (LID ou
+ * numéro) — nécessaire car `groupParticipantsUpdate` exige le format exact
+ * utilisé par WhatsApp pour ce groupe précis. Retourne le JID d'origine si
+ * aucune correspondance n'est trouvée.
+ */
+async function resolveGroupParticipantJid(sock, groupJid, jid) {
+  try {
+    const meta = await getGroupMetadata(sock, groupJid);
+    const candidates = candidateIds(jid, null);
+    const altJid = await resolveAltJid(sock, jid);
+    if (altJid) candidates.add(jidUser(altJid));
+    const participant = meta.participants.find((p) => participantIds(p).some((id) => candidates.has(id)));
+    return participant?.id || jid;
+  } catch {
+    return jid;
+  }
+}
+
 module.exports = {
   getGroupMetadata,
   invalidateGroupMetadata,
@@ -107,4 +127,5 @@ module.exports = {
   isBotAdmin,
   getGroupDescription,
   getGroupName,
+  resolveGroupParticipantJid,
 };

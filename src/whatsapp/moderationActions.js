@@ -25,11 +25,12 @@ async function kickMember(sock, groupJid, memberJid) {
   if (!botIsAdmin) return { ok: false, reason: NOT_ADMIN_MSG };
 
   try {
+    const resolvedJid = await groupMeta.resolveGroupParticipantJid(sock, groupJid, memberJid);
     const meta = await groupMeta.getGroupMetadata(sock, groupJid);
-    const present = meta.participants.some((p) => p.id === memberJid);
+    const present = meta.participants.some((p) => p.id === resolvedJid);
     if (!present) return { ok: false, reason: 'Ce membre ne fait plus partie du groupe.' };
 
-    await sock.groupParticipantsUpdate(groupJid, [memberJid], 'remove');
+    await sock.groupParticipantsUpdate(groupJid, [resolvedJid], 'remove');
     groupMeta.invalidateGroupMetadata(groupJid);
     return { ok: true };
   } catch (err) {

@@ -7,11 +7,15 @@ const { isGroupJid, jidToPhone, normalizeJid, allMentionedJids, resolveToPhoneJi
 const groupStore = require('../groups/groupStore');
 const warnings = require('../groups/warnings');
 const linkAuth = require('../groups/linkAuth');
+const mutes = require('../groups/mutes');
+const blacklist = require('../groups/blacklist');
+const antiSpam = require('../moderation/antiSpam');
 const memoryManager = require('../memory/memoryManager');
 const groupMeta = require('./groupMeta');
 const moderationActions = require('./moderationActions');
 const antiLink = require('../moderation/antiLink');
 const moderationEngine = require('../moderation/moderationEngine');
+const templates = require('./templates');
 const agent = require('../ai/agent');
 const tts = require('../ai/tts');
 const { transcribeAndCleanup } = require('../ai/transcription');
@@ -154,7 +158,89 @@ async function handleMessage(userId, sock, msg) {
   const group = groupStore.getOwnedGroup(userId, groupJid);
   if (!group || !group.enabled) return;
 
-  // ── 3. Anti-liens (déterministe, aucun appel IA) ─────────────────────────
+  // ── 3. Mute (silencieux : on supprime sans notifier à chaque fois) ───────
+  if (!isAdmin && mutes.isMuted(groupJid, userId, senderPhoneJid)) {
+    await moderationActions.deleteMessage(sock, groupJid, msg.key);
+    return;
+  }
+
+  // ── 4. Anti-spam (déterministe, sur TOUS les messages) ────────────────────
+  if (group.antispam_enabled && !isAdmin) {
+    const { isFlooding } = antiSpam.record(groupJid, senderPhoneJid, group.antispam_max_msgs, group.antispam_window_sec);
+    if (isFlooding) {
+      await moderationActions.deleteMessage(sock, groupJid, msg.key);
+      const mentionText = `@${jidToPhone(senderPhoneJid)}`;
+      const maxWarnings = group.max_warnings;
+      const { count, limitReached } = warnings.warn(groupJid, userId, senderPhoneJid, maxWarnings);
+      if (!limitReached) {
+        await sock.sendMessage(groupJid, {
+          text: templates.warnMessage({ mentionText, reason: 'tu envoies des messages trop vite (anti-flood)', current: count, max: maxWarnings }),
+          mentions: [senderPhoneJid],
+        });
+      } else {
+        await sock.sendMessage(groupJid, {
+          text: templates.sanctionMessage({ mentionText, current: count, max: maxWarnings }),
+          mentions: [senderPhoneJid],
+        });
+        const result = await moderationActions.kickMember(sock, groupJid, senderJid);
+        if (!result.ok) await sock.sendMessage(groupJid, { text: result.reason });
+      }
+      return;
+    }
+  }
+
+  // ── 5. Anti-bot : supprime les commandes destinées à d'autres bots ───────
+  if (group.antibot_enabled && !isAdmin && text) {
+    const isForeignBotCommand = /^[.!/#]\S/.test(text) && !commandHandler.parseCommand(text);
+    if (isForeignBotCommand) {
+      const result = await moderationActions.deleteMessage(sock, groupJid, msg.key);
+      if (result.ok) {
+        const mentionText = `@${jidToPhone(senderPhoneJid)}`;
+        await sock.sendMessage(groupJid, {
+          text: templates.antibotDeletedMessage({ mentionText }),
+          mentions: [senderPhoneJid],
+        });
+      }
+      return;
+    }
+  }
+
+  // ── 6. Anti-média : bloque images/vidéos/stickers/documents ──────────────
+  if (group.antimedia_enabled && !isAdmin) {
+    const isMedia = !!(message.imageMessage || message.videoMessage || message.stickerMessage || message.documentMessage);
+    if (isMedia) {
+      await moderationActions.deleteMessage(sock, groupJid, msg.key);
+      return;
+    }
+  }
+
+  // ── 7. Liste noire de mots ─────────────────────────────────────────────
+  if (!isAdmin && text) {
+    const matchedWord = blacklist.findMatch(groupJid, userId, text);
+    if (matchedWord) {
+      await moderationActions.deleteMessage(sock, groupJid, msg.key);
+      const mentionText = `@${jidToPhone(senderPhoneJid)}`;
+      const maxWarnings = group.max_warnings;
+      const { count, limitReached } = warnings.warn(groupJid, userId, senderPhoneJid, maxWarnings);
+      const reason = `le mot "${matchedWord}" est interdit ici`;
+      if (!limitReached) {
+        await sock.sendMessage(groupJid, {
+          text: templates.warnMessage({ mentionText, reason, current: count, max: maxWarnings }),
+          mentions: [senderPhoneJid],
+        });
+      } else {
+        await sock.sendMessage(groupJid, {
+          text: templates.sanctionMessage({ mentionText, current: count, max: maxWarnings }),
+          mentions: [senderPhoneJid],
+        });
+        const result = await moderationActions.kickMember(sock, groupJid, senderJid);
+        if (!result.ok) await sock.sendMessage(groupJid, { text: result.reason });
+      }
+      return;
+    }
+  }
+
+  // ── 8. Anti-liens (déterministe, aucun appel IA) ─────────────────────────
   if (group.anti_link_enabled && !isAdmin && text) {
     const linkCount = antiLink.countLinks(text);
     if (linkCount > 0) {
@@ -162,8 +248,9 @@ async function handleMessage(userId, sock, msg) {
       if (!allowed) {
         const result = await moderationActions.deleteMessage(sock, groupJid, msg.key);
         if (result.ok) {
+          const mentionText = `@${jidToPhone(senderPhoneJid)}`;
           await sock.sendMessage(groupJid, {
-            text: `🔗 Lien supprimé — @${jidToPhone(senderPhoneJid)} n'est pas autorisé à envoyer de lien ici.`,
+            text: templates.linkDeniedMessage({ mentionText }),
             mentions: [senderPhoneJid],
           });
         }
@@ -172,7 +259,7 @@ async function handleMessage(userId, sock, msg) {
     }
   }
 
-  // ── 4. Transcription vocale ───────────────────────────────────────────────
+  // ── 9. Transcription vocale ───────────────────────────────────────────────
   let transcription = null;
   if (isVoice) {
     try {
@@ -183,7 +270,7 @@ async function handleMessage(userId, sock, msg) {
     }
   }
 
-  // ── 5. Mémoire du groupe ──────────────────────────────────────────────────
+  // ── 10. Mémoire du groupe ──────────────────────────────────────────────────
   const memoryEntry = {
     id: msg.key.id,
     userId: senderJid,
@@ -200,7 +287,7 @@ async function handleMessage(userId, sock, msg) {
   const effectiveText = isVoice ? (transcription || '') : text;
   if (!effectiveText) return;
 
-  // ── 6. Mention de l'agent → réponse conversationnelle ────────────────────
+  // ── 11. Mention de l'agent → réponse conversationnelle ────────────────────
   if (group.ai_enabled) {
     const mentioned = await botIsMentioned(sock, message);
     const repliedToBot = mentioned ? false : await isReplyToBot(sock, message);
@@ -219,8 +306,10 @@ async function handleMessage(userId, sock, msg) {
         const delay = randomDelayMs(config.aiReply.delayMinMs, config.aiReply.delayMaxMs);
         await sleep(delay);
 
+        // Réglage par groupe (.vocal) prioritaire sur le défaut global AI_VOICE_REPLY.
+        const voiceEnabled = group.voice_enabled === null ? config.aiReply.voiceEnabled : !!group.voice_enabled;
         let sentAsVoice = false;
-        if (config.aiReply.voiceEnabled) {
+        if (voiceEnabled) {
           try {
             const audio = await tts.synthesizeFrenchVoiceNote(responseText);
             if (audio) {
@@ -243,7 +332,7 @@ async function handleMessage(userId, sock, msg) {
     }
   }
 
-  // ── 7. Modération IA (seulement pour les membres, pas les admins) ────────
+  // ── 12. Modération IA (seulement pour les membres, pas les admins) ────────
   if (group.ai_enabled && !isAdmin) {
     const decision = await moderationEngine.evaluateMessage({
       text: effectiveText,
@@ -259,14 +348,20 @@ async function handleMessage(userId, sock, msg) {
 
     if (action.shouldWarn) {
       warnings.warn(groupJid, userId, senderPhoneJid, group.max_warnings);
+      const mentionText = `@${jidToPhone(senderPhoneJid)}`;
       if (!action.shouldSanction) {
         await sock.sendMessage(groupJid, {
-          text: `⚠️ @${jidToPhone(senderPhoneJid)} — ${decision.reason || 'règlement non respecté'} (${action.newCount}/${group.max_warnings})`,
+          text: templates.warnMessage({
+            mentionText,
+            reason: decision.reason || 'règlement non respecté',
+            current: action.newCount,
+            max: group.max_warnings,
+          }),
           mentions: [senderPhoneJid],
         });
       } else {
         await sock.sendMessage(groupJid, {
-          text: `🚫 SANCTION\n\n@${jidToPhone(senderPhoneJid)} a atteint ${action.newCount}/${group.max_warnings} avertissements.\n\nLe membre va être retiré du groupe.`,
+          text: templates.sanctionMessage({ mentionText, current: action.newCount, max: group.max_warnings }),
           mentions: [senderPhoneJid],
         });
         const result = await moderationActions.kickMember(sock, groupJid, senderJid);
@@ -276,4 +371,28 @@ async function handleMessage(userId, sock, msg) {
   }
 }
 
-module.exports = { handleMessage };
+/**
+ * Envoie le message de bienvenue configuré (.bienvenue) aux nouveaux membres.
+ * Appelé depuis l'event Baileys `group-participants-update` (action 'add').
+ */
+async function handleGroupParticipantsUpdate(userId, sock, update) {
+  const { id: groupJid, participants, action } = update || {};
+  if (action !== 'add' || !isGroupJid(groupJid) || !participants?.length) return;
+
+  try {
+    const group = groupStore.getOwnedGroup(userId, groupJid);
+    if (!group || !group.enabled || !group.welcome_enabled) return;
+
+    const groupName = await groupMeta.getGroupName(sock, groupJid);
+    for (const rawJid of participants) {
+      const phoneJid = await resolveToPhoneJid(sock, rawJid);
+      const mentionText = `@${jidToPhone(phoneJid)}`;
+      const text = templates.welcomeMessage({ mentionText, groupName, customMessage: group.welcome_message });
+      await sock.sendMessage(groupJid, { text, mentions: [phoneJid] });
+    }
+  } catch (err) {
+    logger.warn({ groupJid, err: err.message }, 'Échec envoi message de bienvenue');
+  }
+}
+
+module.exports = { handleMessage, handleGroupParticipantsUpdate };

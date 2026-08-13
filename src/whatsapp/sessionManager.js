@@ -249,6 +249,14 @@ function attachSocketHandlers(userId, sock) {
       }
     }
   });
+
+  sock.ev.on('group-participants-update', async (update) => {
+    try {
+      await getMessageRouter().handleGroupParticipantsUpdate(userId, sock, update);
+    } catch (err) {
+      logger.error({ userId, err: err.message }, 'Erreur traitement group-participants-update');
+    }
+  });
 }
 
 function scheduleReconnect(userId) {
