@@ -42,6 +42,41 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Rassemble tous les identifiants plausibles du bot lui-même (numéro + LID). */
+function botCandidateIds(sock) {
+  const candidates = new Set();
+  const add = (jid) => {
+    const u = jidToPhone(jid);
+    if (u) candidates.add(u);
+  };
+  add(sock.user?.id);
+  add(sock.user?.lid);
+  return candidates;
+}
+
+/**
+ * Détermine si un JID donné désigne le bot, en tentant d'abord une
+ * correspondance directe puis, si besoin, une résolution LID<->numéro via le
+ * repository Baileys (nécessaire depuis le système LID de WhatsApp, où un
+ * même compte peut être désigné par deux formats différents selon le
+ * contexte).
+ */
+async function jidIsBot(sock, jid, botCandidates) {
+  if (!jid) return false;
+  if (botCandidates.has(jidToPhone(jid))) return true;
+
+  const mapping = sock?.signalRepository?.lidMapping;
+  if (!mapping) return false;
+  try {
+    let alt = null;
+    if (jid.endsWith('@lid') && mapping.getPNForLID) alt = await mapping.getPNForLID(jid);
+    else if (jid.endsWith('@s.whatsapp.net') && mapping.getLIDForPN) alt = await mapping.getLIDForPN(jid);
+    return !!alt && botCandidates.has(jidToPhone(alt));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Comme pour isSenderAdmin, une mention peut arriver sous forme de LID alors
  * que sock.user.id est un numéro (ou l'inverse) — une simple comparaison de
@@ -52,31 +87,29 @@ function sleep(ms) {
 async function botIsMentioned(sock, message) {
   const mentioned = allMentionedJids(message);
   if (!mentioned.length) return false;
-
-  const botCandidates = new Set();
-  const add = (jid) => {
-    const u = jidToPhone(jid);
-    if (u) botCandidates.add(u);
-  };
-  add(sock.user?.id);
-  add(sock.user?.lid);
-
-  const mentionedPhones = mentioned.map(jidToPhone);
-  if (mentionedPhones.some((m) => botCandidates.has(m))) return true;
-
-  const mapping = sock?.signalRepository?.lidMapping;
-  if (!mapping) return false;
+  const botCandidates = botCandidateIds(sock);
   for (const raw of mentioned) {
-    try {
-      let alt = null;
-      if (raw.endsWith('@lid') && mapping.getPNForLID) alt = await mapping.getPNForLID(raw);
-      else if (raw.endsWith('@s.whatsapp.net') && mapping.getLIDForPN) alt = await mapping.getLIDForPN(raw);
-      if (alt && botCandidates.has(jidToPhone(alt))) return true;
-    } catch {
-      // ignore, on tente le candidat suivant
-    }
+    if (await jidIsBot(sock, raw, botCandidates)) return true;
   }
   return false;
+}
+
+/** Extrait le contextInfo (métadonnées de citation) quel que soit le type de message. */
+function getContextInfo(message) {
+  return (
+    message?.extendedTextMessage?.contextInfo ||
+    message?.imageMessage?.contextInfo ||
+    message?.videoMessage?.contextInfo ||
+    message?.audioMessage?.contextInfo ||
+    null
+  );
+}
+
+/** Vrai si le message est une réponse (quote) directe à un message envoyé par le bot. */
+async function isReplyToBot(sock, message) {
+  const ctx = getContextInfo(message);
+  if (!ctx?.quotedMessage || !ctx?.participant) return false;
+  return jidIsBot(sock, ctx.participant, botCandidateIds(sock));
 }
 
 async function handleMessage(userId, sock, msg) {
@@ -164,7 +197,8 @@ async function handleMessage(userId, sock, msg) {
   // ── 6. Mention de l'agent → réponse conversationnelle ────────────────────
   if (group.ai_enabled) {
     const mentioned = await botIsMentioned(sock, message);
-    if (mentioned) {
+    const repliedToBot = mentioned ? false : await isReplyToBot(sock, message);
+    if (mentioned || repliedToBot) {
       const relevantMessages = memoryManager.getRelevantContext(userId, groupJid, senderJid);
       const groupName = await groupMeta.getGroupName(sock, groupJid);
       const responseText = await agent.generateReply({
