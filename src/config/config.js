@@ -51,7 +51,10 @@ module.exports = {
     apiKey: process.env.GROQ_API_KEY || '',
     textModels: splitList(
       process.env.GROQ_TEXT_MODELS,
-      'llama-3.3-70b-versatile,openai/gpt-oss-safeguard-20b,llama-3.1-8b-instant,openai/gpt-oss-120b,meta-llama/llama-4-scout-17b-16e-instruct'
+      // llama-3.3-70b-versatile, llama-3.1-8b-instant et llama-4-scout ont été
+      // dépréciés par Groq (annonce du 17/06/2026) — remplacés par leurs
+      // successeurs recommandés (openai/gpt-oss-* et qwen3.6-27b).
+      'openai/gpt-oss-120b,openai/gpt-oss-20b,qwen/qwen3.6-27b,openai/gpt-oss-safeguard-20b'
     ),
     voiceModel: process.env.GROQ_VOICE_MODEL || 'whisper-large-v3',
   },
