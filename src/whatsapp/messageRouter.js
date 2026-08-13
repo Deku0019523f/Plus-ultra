@@ -2,7 +2,7 @@
 
 const config = require('../config/config');
 const logger = require('../utils/logger');
-const { isGroupJid, jidToPhone, normalizeJid, allMentionedJids } = require('../utils/jid');
+const { isGroupJid, jidToPhone, normalizeJid, allMentionedJids, resolveToPhoneJid } = require('../utils/jid');
 
 const groupStore = require('../groups/groupStore');
 const warnings = require('../groups/warnings');
@@ -119,7 +119,12 @@ async function handleMessage(userId, sock, msg) {
   const senderJid = msg.key.fromMe
     ? normalizeJid(sock.user?.id)
     : msg.key.participant || groupJid;
-  const senderName = msg.pushName || jidToPhone(senderJid);
+  // Numéro canonique (résolu depuis un éventuel LID) : utilisé comme clé DB
+  // (liens/avertissements) et pour l'affichage @mention, afin que la même
+  // personne soit toujours reconnue quel que soit le format sous lequel
+  // WhatsApp présente l'expéditeur.
+  const senderPhoneJid = await resolveToPhoneJid(sock, senderJid);
+  const senderName = msg.pushName || jidToPhone(senderPhoneJid);
 
   const message = msg.message;
   if (!message) return;
@@ -153,12 +158,13 @@ async function handleMessage(userId, sock, msg) {
   if (group.anti_link_enabled && !isAdmin && text) {
     const linkCount = antiLink.countLinks(text);
     if (linkCount > 0) {
-      const { allowed } = linkAuth.consume(groupJid, userId, senderJid, linkCount);
+      const { allowed } = linkAuth.consume(groupJid, userId, senderPhoneJid, linkCount);
       if (!allowed) {
         const result = await moderationActions.deleteMessage(sock, groupJid, msg.key);
         if (result.ok) {
           await sock.sendMessage(groupJid, {
-            text: `🔗 Lien supprimé — @${jidToPhone(senderJid)} n'est pas autorisé à envoyer de lien ici.`,
+            text: `🔗 Lien supprimé — @${jidToPhone(senderPhoneJid)} n'est pas autorisé à envoyer de lien ici.`,
+            mentions: [senderPhoneJid],
           });
         }
         return; // message supprimé : on ne le mémorise pas, on ne le modère pas davantage
@@ -247,19 +253,21 @@ async function handleMessage(userId, sock, msg) {
 
     const action = moderationEngine.decideAction(
       decision,
-      warnings.get(groupJid, userId, senderJid),
+      warnings.get(groupJid, userId, senderPhoneJid),
       group.max_warnings
     );
 
     if (action.shouldWarn) {
-      warnings.warn(groupJid, userId, senderJid, group.max_warnings);
+      warnings.warn(groupJid, userId, senderPhoneJid, group.max_warnings);
       if (!action.shouldSanction) {
         await sock.sendMessage(groupJid, {
-          text: `⚠️ @${jidToPhone(senderJid)} — ${decision.reason || 'règlement non respecté'} (${action.newCount}/${group.max_warnings})`,
+          text: `⚠️ @${jidToPhone(senderPhoneJid)} — ${decision.reason || 'règlement non respecté'} (${action.newCount}/${group.max_warnings})`,
+          mentions: [senderPhoneJid],
         });
       } else {
         await sock.sendMessage(groupJid, {
-          text: `🚫 SANCTION\n\n@${jidToPhone(senderJid)} a atteint ${action.newCount}/${group.max_warnings} avertissements.\n\nLe membre va être retiré du groupe.`,
+          text: `🚫 SANCTION\n\n@${jidToPhone(senderPhoneJid)} a atteint ${action.newCount}/${group.max_warnings} avertissements.\n\nLe membre va être retiré du groupe.`,
+          mentions: [senderPhoneJid],
         });
         const result = await moderationActions.kickMember(sock, groupJid, senderJid);
         if (!result.ok) await sock.sendMessage(groupJid, { text: result.reason });
