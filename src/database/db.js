@@ -26,6 +26,14 @@ function ensureColumn(table, column, ddl) {
   }
 }
 ensureColumn('users', 'telegram_chat_id', 'telegram_chat_id TEXT');
+ensureColumn('groups', 'antispam_enabled', 'antispam_enabled INTEGER NOT NULL DEFAULT 0');
+ensureColumn('groups', 'antispam_max_msgs', 'antispam_max_msgs INTEGER NOT NULL DEFAULT 5');
+ensureColumn('groups', 'antispam_window_sec', 'antispam_window_sec INTEGER NOT NULL DEFAULT 10');
+ensureColumn('groups', 'antimedia_enabled', 'antimedia_enabled INTEGER NOT NULL DEFAULT 0');
+ensureColumn('groups', 'welcome_enabled', 'welcome_enabled INTEGER NOT NULL DEFAULT 0');
+ensureColumn('groups', 'welcome_message', "welcome_message TEXT DEFAULT ''");
+ensureColumn('groups', 'antibot_enabled', 'antibot_enabled INTEGER NOT NULL DEFAULT 0');
+ensureColumn('groups', 'voice_enabled', 'voice_enabled INTEGER');
 
 function now() {
   return Date.now();
@@ -103,8 +111,11 @@ function upsertGroup(groupJid, userId, patch = {}) {
   if (!existing) {
     db.prepare(
       `INSERT INTO groups
-        (group_jid, user_id, name, enabled, ai_enabled, anti_link_enabled, max_warnings, memory_limit, rules, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        (group_jid, user_id, name, enabled, ai_enabled, anti_link_enabled, max_warnings, memory_limit, rules,
+         antispam_enabled, antispam_max_msgs, antispam_window_sec, antimedia_enabled, welcome_enabled, welcome_message,
+         antibot_enabled, voice_enabled,
+         created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       groupJid,
       userId,
@@ -115,6 +126,14 @@ function upsertGroup(groupJid, userId, patch = {}) {
       patch.maxWarnings ?? config.moderation.maxWarnings,
       patch.memoryLimit ?? config.memory.limit,
       patch.rules ?? '',
+      patch.antispamEnabled ? 1 : 0,
+      patch.antispamMaxMsgs ?? 5,
+      patch.antispamWindowSec ?? 10,
+      patch.antimediaEnabled ? 1 : 0,
+      patch.welcomeEnabled ? 1 : 0,
+      patch.welcomeMessage ?? '',
+      patch.antibotEnabled ? 1 : 0,
+      patch.voiceEnabled === undefined ? null : (patch.voiceEnabled === null ? null : (patch.voiceEnabled ? 1 : 0)),
       t,
       t
     );
@@ -134,6 +153,14 @@ function upsertGroup(groupJid, userId, patch = {}) {
        max_warnings = COALESCE(?, max_warnings),
        memory_limit = COALESCE(?, memory_limit),
        rules = COALESCE(?, rules),
+       antispam_enabled = COALESCE(?, antispam_enabled),
+       antispam_max_msgs = COALESCE(?, antispam_max_msgs),
+       antispam_window_sec = COALESCE(?, antispam_window_sec),
+       antimedia_enabled = COALESCE(?, antimedia_enabled),
+       welcome_enabled = COALESCE(?, welcome_enabled),
+       welcome_message = COALESCE(?, welcome_message),
+       antibot_enabled = COALESCE(?, antibot_enabled),
+       voice_enabled = CASE WHEN ? = 1 THEN NULL WHEN ? IS NOT NULL THEN ? ELSE voice_enabled END,
        updated_at = ?
      WHERE group_jid = ? AND user_id = ?`
   ).run(
@@ -144,6 +171,16 @@ function upsertGroup(groupJid, userId, patch = {}) {
     patch.maxWarnings ?? null,
     patch.memoryLimit ?? null,
     patch.rules ?? null,
+    patch.antispamEnabled === undefined ? null : (patch.antispamEnabled ? 1 : 0),
+    patch.antispamMaxMsgs ?? null,
+    patch.antispamWindowSec ?? null,
+    patch.antimediaEnabled === undefined ? null : (patch.antimediaEnabled ? 1 : 0),
+    patch.welcomeEnabled === undefined ? null : (patch.welcomeEnabled ? 1 : 0),
+    patch.welcomeMessage ?? null,
+    patch.antibotEnabled === undefined ? null : (patch.antibotEnabled ? 1 : 0),
+    patch.resetVoiceToDefault ? 1 : 0,
+    patch.voiceEnabled === undefined ? null : (patch.voiceEnabled === null ? null : (patch.voiceEnabled ? 1 : 0)),
+    patch.voiceEnabled === undefined ? null : (patch.voiceEnabled === null ? null : (patch.voiceEnabled ? 1 : 0)),
     t,
     groupJid,
     userId
@@ -217,6 +254,13 @@ function consumeLinkQuota(groupJid, userId, memberJid, count = 1) {
   return { allowed: true, remaining: remaining - count };
 }
 
+function resetLinkUsage(groupJid, userId, memberJid) {
+  db.prepare(
+    'UPDATE link_authorizations SET used_links = 0, updated_at = ? WHERE group_jid = ? AND user_id = ? AND member_jid = ?'
+  ).run(now(), groupJid, userId, memberJid);
+  return getLinkAuthorization(groupJid, userId, memberJid);
+}
+
 // ── Statistiques mémoire (compteur rapide sans lire les fichiers) ───────────
 function bumpMemoryCount(groupJid, userId, delta = 1) {
   db.prepare(
@@ -245,6 +289,52 @@ function getMemoryStats(groupJid, userId) {
 
 logger.info({ dbPath: config.dbPath }, 'Base SQLite initialisée');
 
+// ── Mutes (isolés par groupe) ─────────────────────────────────────────────
+function muteMember(groupJid, userId, memberJid, until, mutedBy) {
+  const t = now();
+  db.prepare(
+    `INSERT INTO mutes (group_jid, user_id, member_jid, until, muted_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(group_jid, member_jid) DO UPDATE SET until = ?, muted_by = ?, created_at = ?`
+  ).run(groupJid, userId, memberJid, until ?? null, mutedBy ?? null, t, until ?? null, mutedBy ?? null, t);
+}
+
+function unmuteMember(groupJid, userId, memberJid) {
+  db.prepare('DELETE FROM mutes WHERE group_jid = ? AND user_id = ? AND member_jid = ?').run(groupJid, userId, memberJid);
+}
+
+/** Vrai si le membre est actuellement muet. Nettoie automatiquement les mutes expirés. */
+function isMuted(groupJid, userId, memberJid) {
+  const row = db
+    .prepare('SELECT * FROM mutes WHERE group_jid = ? AND user_id = ? AND member_jid = ?')
+    .get(groupJid, userId, memberJid);
+  if (!row) return false;
+  if (row.until && row.until <= now()) {
+    unmuteMember(groupJid, userId, memberJid);
+    return false;
+  }
+  return true;
+}
+
+// ── Liste noire de mots (isolée par groupe) ──────────────────────────────
+function addBlacklistWord(groupJid, userId, word, addedBy) {
+  db.prepare(
+    `INSERT OR IGNORE INTO blacklist_words (group_jid, user_id, word, added_by, created_at)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(groupJid, userId, word, addedBy ?? null, now());
+}
+
+function removeBlacklistWord(groupJid, userId, word) {
+  db.prepare('DELETE FROM blacklist_words WHERE group_jid = ? AND user_id = ? AND word = ?').run(groupJid, userId, word);
+}
+
+function listBlacklistWords(groupJid, userId) {
+  return db
+    .prepare('SELECT word FROM blacklist_words WHERE group_jid = ? AND user_id = ?')
+    .all(groupJid, userId)
+    .map((r) => r.word);
+}
+
 module.exports = {
   raw: db,
   createUser,
@@ -264,7 +354,14 @@ module.exports = {
   setLinkAuthorization,
   getLinkAuthorization,
   consumeLinkQuota,
+  resetLinkUsage,
   bumpMemoryCount,
   resetMemoryCount,
   getMemoryStats,
+  muteMember,
+  unmuteMember,
+  isMuted,
+  addBlacklistWord,
+  removeBlacklistWord,
+  listBlacklistWords,
 };
