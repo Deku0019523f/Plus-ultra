@@ -216,9 +216,13 @@ async function handleMessage(userId, sock, msg) {
         let sentAsVoice = false;
         if (config.aiReply.voiceEnabled) {
           try {
-            const audio = await tts.synthesizeFrench(responseText);
+            const audio = await tts.synthesizeFrenchVoiceNote(responseText);
             if (audio) {
-              await sock.sendMessage(groupJid, { audio, mimetype: 'audio/mpeg', ptt: true }, { quoted: msg });
+              await sock.sendMessage(
+                groupJid,
+                { audio, mimetype: 'audio/ogg; codecs=opus', ptt: true },
+                { quoted: msg }
+              );
               sentAsVoice = true;
             }
           } catch (err) {
