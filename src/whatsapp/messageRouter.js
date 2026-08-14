@@ -323,11 +323,21 @@ async function handleMessage(userId, sock, msg) {
       });
 
       if (responseText) {
-        const delay = randomDelayMs(config.aiReply.delayMinMs, config.aiReply.delayMaxMs);
-        await sleep(delay);
-
         // Réglage par groupe (.vocal) prioritaire sur le défaut global AI_VOICE_REPLY.
         const voiceEnabled = group.voice_enabled === null ? config.aiReply.voiceEnabled : !!group.voice_enabled;
+        const delay = randomDelayMs(config.aiReply.delayMinMs, config.aiReply.delayMaxMs);
+
+        // Simule "en train d'écrire..." / "en train d'enregistrer..." pendant
+        // le délai, pour un rendu plus naturel qu'un message qui apparaît
+        // d'un coup après un silence.
+        try {
+          await sock.sendPresenceUpdate(voiceEnabled ? 'recording' : 'composing', groupJid);
+        } catch (err) {
+          logger.warn({ groupJid, err: err.message }, 'Échec presence update (composing/recording)');
+        }
+
+        await sleep(delay);
+
         let sentAsVoice = false;
         if (voiceEnabled) {
           try {
@@ -346,6 +356,12 @@ async function handleMessage(userId, sock, msg) {
         }
         if (!sentAsVoice) {
           await sock.sendMessage(groupJid, { text: responseText }, { quoted: msg });
+        }
+
+        try {
+          await sock.sendPresenceUpdate('paused', groupJid);
+        } catch {
+          // sans conséquence : la présence WhatsApp expire d'elle-même
         }
       }
       return; // une mention ne déclenche pas aussi une analyse de modération
