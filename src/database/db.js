@@ -35,6 +35,34 @@ ensureColumn('groups', 'welcome_message', "welcome_message TEXT DEFAULT ''");
 ensureColumn('groups', 'antibot_enabled', 'antibot_enabled INTEGER NOT NULL DEFAULT 0');
 ensureColumn('groups', 'antibot_prefixes', "antibot_prefixes TEXT DEFAULT '.!/#'");
 ensureColumn('groups', 'voice_enabled', 'voice_enabled INTEGER');
+ensureColumn('groups', 'link_max_warnings', 'link_max_warnings INTEGER NOT NULL DEFAULT 3');
+
+// La colonne 'category' doit faire partie de la clé primaire (un même membre
+// a un compteur distinct par catégorie d'infraction : liens vs le reste).
+// SQLite ne permet pas d'altérer une PRIMARY KEY via ALTER TABLE, donc on
+// reconstruit la table si elle date d'avant cette migration (toutes les
+// lignes existantes basculent en category='general').
+(function migrateWarningsCategory() {
+  const cols = db.prepare('PRAGMA table_info(warnings)').all();
+  if (cols.some((c) => c.name === 'category')) return; // déjà migré
+  db.exec(`
+    CREATE TABLE warnings_v2 (
+      group_jid  TEXT NOT NULL,
+      user_id    TEXT NOT NULL,
+      member_jid TEXT NOT NULL,
+      category   TEXT NOT NULL DEFAULT 'general',
+      count      INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (group_jid, member_jid, category)
+    );
+    INSERT INTO warnings_v2 (group_jid, user_id, member_jid, category, count, updated_at)
+      SELECT group_jid, user_id, member_jid, 'general', count, updated_at FROM warnings;
+    DROP TABLE warnings;
+    ALTER TABLE warnings_v2 RENAME TO warnings;
+    CREATE INDEX IF NOT EXISTS idx_warnings_group ON warnings(group_jid, user_id);
+  `);
+  logger.info('Migration warnings -> ajout de la colonne category (avertissements par type d\'infraction)');
+})();
 
 function now() {
   return Date.now();
@@ -112,11 +140,11 @@ function upsertGroup(groupJid, userId, patch = {}) {
   if (!existing) {
     db.prepare(
       `INSERT INTO groups
-        (group_jid, user_id, name, enabled, ai_enabled, anti_link_enabled, max_warnings, memory_limit, rules,
+        (group_jid, user_id, name, enabled, ai_enabled, anti_link_enabled, max_warnings, link_max_warnings, memory_limit, rules,
          antispam_enabled, antispam_max_msgs, antispam_window_sec, antimedia_enabled, welcome_enabled, welcome_message,
          antibot_enabled, antibot_prefixes, voice_enabled,
          created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       groupJid,
       userId,
@@ -125,6 +153,7 @@ function upsertGroup(groupJid, userId, patch = {}) {
       patch.aiEnabled === false ? 0 : 1,
       patch.antiLinkEnabled === false ? 0 : 1,
       patch.maxWarnings ?? config.moderation.maxWarnings,
+      patch.linkMaxWarnings ?? config.moderation.linkMaxWarnings,
       patch.memoryLimit ?? config.memory.limit,
       patch.rules ?? '',
       patch.antispamEnabled ? 1 : 0,
@@ -153,6 +182,7 @@ function upsertGroup(groupJid, userId, patch = {}) {
        ai_enabled = COALESCE(?, ai_enabled),
        anti_link_enabled = COALESCE(?, anti_link_enabled),
        max_warnings = COALESCE(?, max_warnings),
+       link_max_warnings = COALESCE(?, link_max_warnings),
        memory_limit = COALESCE(?, memory_limit),
        rules = COALESCE(?, rules),
        antispam_enabled = COALESCE(?, antispam_enabled),
@@ -172,6 +202,7 @@ function upsertGroup(groupJid, userId, patch = {}) {
     patch.aiEnabled === undefined ? null : (patch.aiEnabled ? 1 : 0),
     patch.antiLinkEnabled === undefined ? null : (patch.antiLinkEnabled ? 1 : 0),
     patch.maxWarnings ?? null,
+    patch.linkMaxWarnings ?? null,
     patch.memoryLimit ?? null,
     patch.rules ?? null,
     patch.antispamEnabled === undefined ? null : (patch.antispamEnabled ? 1 : 0),
@@ -202,42 +233,55 @@ function listGroupsForUser(userId) {
 }
 
 // ── Avertissements (isolés par groupe) ───────────────────────────────────────
-function getWarning(groupJid, userId, memberJid) {
+function getWarning(groupJid, userId, memberJid, category = 'general') {
   return (
-    db.prepare('SELECT * FROM warnings WHERE group_jid = ? AND user_id = ? AND member_jid = ?')
-      .get(groupJid, userId, memberJid) || { group_jid: groupJid, user_id: userId, member_jid: memberJid, count: 0 }
+    db.prepare('SELECT * FROM warnings WHERE group_jid = ? AND user_id = ? AND member_jid = ? AND category = ?')
+      .get(groupJid, userId, memberJid, category) || {
+      group_jid: groupJid,
+      user_id: userId,
+      member_jid: memberJid,
+      category,
+      count: 0,
+    }
   );
 }
 
-function listWarnings(groupJid, userId) {
-  return db.prepare('SELECT * FROM warnings WHERE group_jid = ? AND user_id = ? ORDER BY count DESC').all(groupJid, userId);
+function listWarnings(groupJid, userId, category = 'general') {
+  return db
+    .prepare('SELECT * FROM warnings WHERE group_jid = ? AND user_id = ? AND category = ? ORDER BY count DESC')
+    .all(groupJid, userId, category);
 }
 
-function addWarning(groupJid, userId, memberJid, delta = 1) {
+function addWarning(groupJid, userId, memberJid, delta = 1, category = 'general') {
   const t = now();
-  const current = getWarning(groupJid, userId, memberJid).count || 0;
+  const current = getWarning(groupJid, userId, memberJid, category).count || 0;
   const next = Math.max(0, current + delta);
   db.prepare(
-    `INSERT INTO warnings (group_jid, user_id, member_jid, count, updated_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(group_jid, member_jid) DO UPDATE SET count = ?, updated_at = ?`
-  ).run(groupJid, userId, memberJid, next, t, next, t);
+    `INSERT INTO warnings (group_jid, user_id, member_jid, category, count, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(group_jid, member_jid, category) DO UPDATE SET count = ?, updated_at = ?`
+  ).run(groupJid, userId, memberJid, category, next, t, next, t);
   return next;
 }
 
-function resetWarning(groupJid, userId, memberJid) {
-  db.prepare('DELETE FROM warnings WHERE group_jid = ? AND user_id = ? AND member_jid = ?').run(groupJid, userId, memberJid);
+function resetWarning(groupJid, userId, memberJid, category = 'general') {
+  db.prepare('DELETE FROM warnings WHERE group_jid = ? AND user_id = ? AND member_jid = ? AND category = ?').run(
+    groupJid,
+    userId,
+    memberJid,
+    category
+  );
 }
 
 /** Fixe le compteur d'avertissements à une valeur absolue (ex: .warn en mode direct → passe droit au seuil). */
-function setWarningCount(groupJid, userId, memberJid, count) {
+function setWarningCount(groupJid, userId, memberJid, count, category = 'general') {
   const t = now();
   const value = Math.max(0, count);
   db.prepare(
-    `INSERT INTO warnings (group_jid, user_id, member_jid, count, updated_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(group_jid, member_jid) DO UPDATE SET count = ?, updated_at = ?`
-  ).run(groupJid, userId, memberJid, value, t, value, t);
+    `INSERT INTO warnings (group_jid, user_id, member_jid, category, count, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(group_jid, member_jid, category) DO UPDATE SET count = ?, updated_at = ?`
+  ).run(groupJid, userId, memberJid, category, value, t, value, t);
   return value;
 }
 

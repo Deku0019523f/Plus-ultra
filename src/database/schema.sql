@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS groups (
   enabled             INTEGER NOT NULL DEFAULT 0,
   ai_enabled          INTEGER NOT NULL DEFAULT 1,
   anti_link_enabled   INTEGER NOT NULL DEFAULT 1,
-  max_warnings        INTEGER NOT NULL DEFAULT 3,
+  max_warnings        INTEGER NOT NULL DEFAULT 5,
+  link_max_warnings   INTEGER NOT NULL DEFAULT 3,
   memory_limit        INTEGER NOT NULL DEFAULT 1000,
   rules               TEXT DEFAULT '',
   antispam_enabled    INTEGER NOT NULL DEFAULT 0,
@@ -63,9 +64,10 @@ CREATE TABLE IF NOT EXISTS warnings (
   group_jid   TEXT NOT NULL,
   user_id     TEXT NOT NULL, -- propriétaire (isolation)
   member_jid  TEXT NOT NULL, -- membre averti
+  category    TEXT NOT NULL DEFAULT 'general', -- 'general' (tout) ou 'link' (liens, seuil séparé)
   count       INTEGER NOT NULL DEFAULT 0,
   updated_at  INTEGER NOT NULL,
-  PRIMARY KEY (group_jid, member_jid),
+  PRIMARY KEY (group_jid, member_jid, category),
   FOREIGN KEY (group_jid, user_id) REFERENCES groups(group_jid, user_id) ON DELETE CASCADE
 );
 
