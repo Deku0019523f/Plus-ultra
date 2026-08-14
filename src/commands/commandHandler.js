@@ -10,6 +10,7 @@ const memoryManager = require('../memory/memoryManager');
 const groupMeta = require('../whatsapp/groupMeta');
 const moderationActions = require('../whatsapp/moderationActions');
 const templates = require('../whatsapp/templates');
+const kickReasons = require('../moderation/kickReasons');
 const { parseDuration, formatUntil } = require('../moderation/duration');
 const { firstMentionedJid, jidToPhone, resolveToPhoneJid } = require('../utils/jid');
 const logger = require('../utils/logger');
@@ -199,20 +200,27 @@ async function cmdLienTous({ sock, userId, groupJid, senderJid, parsed }) {
   await reply(sock, groupJid, `✅ ${count} membre(s) peuvent désormais envoyer ${n} lien(s) chacun dans ce groupe.`);
 }
 
-async function cmdWarn({ sock, userId, groupJid, parsed }) {
+async function cmdWarn({ sock, userId, groupJid, senderJid, parsed }) {
   const rawMemberJid = firstMentionedJid(parsed.message);
   if (!rawMemberJid) {
-    await reply(sock, groupJid, 'Usage : .warn @membre [raison]');
+    await reply(sock, groupJid, 'Usage : .warn @membre [raison] — ou .warn @membre direct pour bannir immédiatement (3 signalements d\'un coup)');
     return;
   }
   const memberJid = await resolveToPhoneJid(sock, rawMemberJid);
   const mention = await buildMention(sock, memberJid);
   const mentionToken = parsed.args.find((a) => a.startsWith('@'));
-  const reason = parsed.args.filter((a) => a !== mentionToken).join(' ').trim();
+  const DIRECT_KEYWORDS = new Set(['direct', 'force', 'ban', 'banni']);
+  const isDirect = parsed.args.some((a) => DIRECT_KEYWORDS.has(a.toLowerCase()));
+  const reason = parsed.args
+    .filter((a) => a !== mentionToken && !DIRECT_KEYWORDS.has(a.toLowerCase()))
+    .join(' ')
+    .trim();
 
   const group = groupStore.getOwnedGroup(userId, groupJid);
   const maxWarnings = group?.max_warnings || config.moderation.maxWarnings;
-  const { count, limitReached } = warnings.warn(groupJid, userId, memberJid, maxWarnings);
+  const { count, limitReached } = isDirect
+    ? warnings.warnDirect(groupJid, userId, memberJid, maxWarnings)
+    : warnings.warn(groupJid, userId, memberJid, maxWarnings);
 
   if (!limitReached) {
     await reply(
@@ -230,6 +238,8 @@ async function cmdWarn({ sock, userId, groupJid, parsed }) {
     templates.sanctionMessage({ mentionText: mention.text, current: count, max: maxWarnings }),
     [mention.jid]
   );
+  kickReasons.record(groupJid, rawMemberJid, reason || `${maxWarnings} avertissements atteints`);
+  kickReasons.record(groupJid, memberJid, reason || `${maxWarnings} avertissements atteints`);
   const result = await moderationActions.kickMember(sock, groupJid, rawMemberJid);
   if (!result.ok) await reply(sock, groupJid, result.reason);
 }
@@ -303,6 +313,7 @@ async function cmdKick({ sock, groupJid, parsed }) {
     return;
   }
   const mention = await buildMention(sock, rawMemberJid);
+  kickReasons.record(groupJid, rawMemberJid, 'expulsion manuelle (.kick)');
   const result = await moderationActions.kickMember(sock, groupJid, rawMemberJid);
   if (!result.ok) {
     await reply(sock, groupJid, result.reason);
@@ -398,15 +409,28 @@ async function cmdInfo({ sock, groupJid }) {
   const meta = await groupMeta.getGroupMetadata(sock, groupJid);
   const admins = meta.participants.filter((p) => p.admin === 'admin' || p.admin === 'superadmin');
   const created = meta.creation ? new Date(meta.creation * 1000).toLocaleDateString('fr-FR') : 'inconnue';
-  await reply(
-    sock,
-    groupJid,
-    `ℹ️ INFOS DU GROUPE\n\n` +
-      `📛 Nom : ${meta.subject}\n` +
-      `👥 Membres : ${meta.participants.length}\n` +
-      `👑 Admins : ${admins.length}\n` +
-      `📅 Création : ${created}`
-  );
+  const description = (meta.desc || '').trim();
+
+  const caption =
+    `ℹ️ *${meta.subject}*\n\n` +
+    `👥 Membres : ${meta.participants.length}\n` +
+    `👑 Admins : ${admins.length}\n` +
+    `📅 Création : ${created}` +
+    (description ? `\n\n📜 Description :\n${description}` : '');
+
+  // Photo du groupe si disponible ('image' = basse résolution, suffisant pour une carte info).
+  let photoUrl = null;
+  try {
+    photoUrl = await sock.profilePictureUrl(groupJid, 'image');
+  } catch {
+    photoUrl = null; // pas de photo définie pour ce groupe, ou récupération impossible
+  }
+
+  if (photoUrl) {
+    await sock.sendMessage(groupJid, { image: { url: photoUrl }, caption });
+  } else {
+    await reply(sock, groupJid, caption);
+  }
 }
 
 async function cmdBienvenue({ sock, userId, groupJid, parsed }) {
@@ -476,28 +500,28 @@ async function cmdStatus({ sock, userId, groupJid }) {
 
 function commandsListText() {
   return (
-    `.plus_ultra — active l'agent dans ce groupe (admin)\n` +
-    `.plus_ultra_off — désactive l'agent (admin)\n` +
-    `.lien @membre N — autorise N liens (admin)\n` +
-    `.lien_reset @membre — remet son quota de liens à zéro (admin)\n` +
-    `.lien_tous N — autorise N liens à tous les membres (admin)\n` +
-    `.warn @membre [raison] — ajoute un avertissement (admin)\n` +
-    `.unwarn @membre — retire un avertissement (admin)\n` +
-    `.warns [@membre] — affiche les avertissements\n` +
-    `.mute @membre [durée] — rend un membre muet, ex: 30m/2h/1d (admin)\n` +
-    `.unmute @membre — lève le mute (admin)\n` +
-    `.kick @membre — expulse directement (admin)\n` +
-    `.antispam on|off — anti-flood (admin)\n` +
-    `.antimedia on|off — bloque images/vidéos/stickers (admin)\n` +
-    `.antibot on|off — supprime les commandes destinées à d'autres bots (admin)\n` +
-    `.blacklist ajouter|retirer|liste <mot> — mots interdits (admin)\n` +
-    `.tagall [message] — mentionne tous les membres (admin)\n` +
-    `.info — infos du groupe\n` +
-    `.bienvenue on|off [message] — message d'accueil auto (admin)\n` +
-    `.vocal on|off|defaut — réponses IA en vocal ou texte (admin)\n` +
-    `.reglement — actualise le règlement (admin)\n` +
-    `.status — affiche l'état de l'agent\n` +
-    `.help — affiche ce message`
+    `*.plus_ultra* — active l'agent dans ce groupe (admin)\n` +
+    `*.plus_ultra_off* — désactive l'agent (admin)\n` +
+    `*.lien* @membre N — autorise N liens (admin)\n` +
+    `*.lien_reset* @membre — remet son quota de liens à zéro (admin)\n` +
+    `*.lien_tous* N — autorise N liens à tous les membres (admin)\n` +
+    `*.warn* @membre [raison|direct] — ajoute un avertissement, ou bannit directement avec "direct" (admin)\n` +
+    `*.unwarn* @membre — retire un avertissement (admin)\n` +
+    `*.warns* [@membre] — affiche les avertissements\n` +
+    `*.mute* @membre [durée] — rend un membre muet, ex: 30m/2h/1d (admin)\n` +
+    `*.unmute* @membre — lève le mute (admin)\n` +
+    `*.kick* @membre — expulse directement (admin)\n` +
+    `*.antispam* on|off — anti-flood (admin)\n` +
+    `*.antimedia* on|off — bloque images/vidéos/stickers (admin)\n` +
+    `*.antibot* on|off — supprime les commandes destinées à d'autres bots (admin)\n` +
+    `*.blacklist* ajouter|retirer|liste <mot> — mots interdits (admin)\n` +
+    `*.tagall* [message] — mentionne tous les membres (admin)\n` +
+    `*.info* — infos du groupe\n` +
+    `*.bienvenue* on|off [message] — message d'accueil auto (admin)\n` +
+    `*.vocal* on|off|defaut — réponses IA en vocal ou texte (admin)\n` +
+    `*.reglement* — actualise le règlement (admin)\n` +
+    `*.status* — affiche l'état de l'agent\n` +
+    `*.help* — affiche ce message`
   );
 }
 
