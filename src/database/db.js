@@ -33,6 +33,7 @@ ensureColumn('groups', 'antimedia_enabled', 'antimedia_enabled INTEGER NOT NULL 
 ensureColumn('groups', 'welcome_enabled', 'welcome_enabled INTEGER NOT NULL DEFAULT 0');
 ensureColumn('groups', 'welcome_message', "welcome_message TEXT DEFAULT ''");
 ensureColumn('groups', 'antibot_enabled', 'antibot_enabled INTEGER NOT NULL DEFAULT 0');
+ensureColumn('groups', 'antibot_prefixes', "antibot_prefixes TEXT DEFAULT '.!/#'");
 ensureColumn('groups', 'voice_enabled', 'voice_enabled INTEGER');
 
 function now() {
@@ -113,9 +114,9 @@ function upsertGroup(groupJid, userId, patch = {}) {
       `INSERT INTO groups
         (group_jid, user_id, name, enabled, ai_enabled, anti_link_enabled, max_warnings, memory_limit, rules,
          antispam_enabled, antispam_max_msgs, antispam_window_sec, antimedia_enabled, welcome_enabled, welcome_message,
-         antibot_enabled, voice_enabled,
+         antibot_enabled, antibot_prefixes, voice_enabled,
          created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       groupJid,
       userId,
@@ -133,6 +134,7 @@ function upsertGroup(groupJid, userId, patch = {}) {
       patch.welcomeEnabled ? 1 : 0,
       patch.welcomeMessage ?? '',
       patch.antibotEnabled ? 1 : 0,
+      patch.antibotPrefixes ?? '.!/#',
       patch.voiceEnabled === undefined ? null : (patch.voiceEnabled === null ? null : (patch.voiceEnabled ? 1 : 0)),
       t,
       t
@@ -160,6 +162,7 @@ function upsertGroup(groupJid, userId, patch = {}) {
        welcome_enabled = COALESCE(?, welcome_enabled),
        welcome_message = COALESCE(?, welcome_message),
        antibot_enabled = COALESCE(?, antibot_enabled),
+       antibot_prefixes = COALESCE(?, antibot_prefixes),
        voice_enabled = CASE WHEN ? = 1 THEN NULL WHEN ? IS NOT NULL THEN ? ELSE voice_enabled END,
        updated_at = ?
      WHERE group_jid = ? AND user_id = ?`
@@ -178,6 +181,7 @@ function upsertGroup(groupJid, userId, patch = {}) {
     patch.welcomeEnabled === undefined ? null : (patch.welcomeEnabled ? 1 : 0),
     patch.welcomeMessage ?? null,
     patch.antibotEnabled === undefined ? null : (patch.antibotEnabled ? 1 : 0),
+    patch.antibotPrefixes ?? null,
     patch.resetVoiceToDefault ? 1 : 0,
     patch.voiceEnabled === undefined ? null : (patch.voiceEnabled === null ? null : (patch.voiceEnabled ? 1 : 0)),
     patch.voiceEnabled === undefined ? null : (patch.voiceEnabled === null ? null : (patch.voiceEnabled ? 1 : 0)),

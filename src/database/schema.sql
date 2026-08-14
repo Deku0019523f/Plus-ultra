@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS groups (
   welcome_enabled     INTEGER NOT NULL DEFAULT 0,
   welcome_message     TEXT DEFAULT '',
   antibot_enabled     INTEGER NOT NULL DEFAULT 0,
+  antibot_prefixes    TEXT DEFAULT '.!/#',
   voice_enabled       INTEGER, -- NULL = suit AI_VOICE_REPLY (.env), 0/1 = override par groupe
   created_at          INTEGER NOT NULL,
   updated_at          INTEGER NOT NULL,
