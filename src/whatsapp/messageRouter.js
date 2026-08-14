@@ -10,6 +10,7 @@ const linkAuth = require('../groups/linkAuth');
 const mutes = require('../groups/mutes');
 const blacklist = require('../groups/blacklist');
 const antiSpam = require('../moderation/antiSpam');
+const kickReasons = require('../moderation/kickReasons');
 const memoryManager = require('../memory/memoryManager');
 const groupMeta = require('./groupMeta');
 const moderationActions = require('./moderationActions');
@@ -142,6 +143,7 @@ async function handleMessage(userId, sock, msg) {
   // ── 1. Commandes (fonctionnent même si le groupe n'est pas encore activé,
   //      puisque .plus_ultra sert justement à l'activer) ──────────────────
   const parsed = commandHandler.parseCommand(text);
+  let isKnownCommand = false;
   if (parsed) {
     const handled = await commandHandler.handleCommand({
       sock,
@@ -152,6 +154,7 @@ async function handleMessage(userId, sock, msg) {
       parsed: { ...parsed, message },
     });
     if (handled) return;
+    isKnownCommand = handled; // false ici, mais explicite : parsed ≠ reconnu (cf. antibot plus bas)
   }
 
   // ── 2. Le groupe doit être activé pour tout le reste du pipeline ─────────
@@ -182,6 +185,8 @@ async function handleMessage(userId, sock, msg) {
           text: templates.sanctionMessage({ mentionText, current: count, max: maxWarnings }),
           mentions: [senderPhoneJid],
         });
+        kickReasons.record(groupJid, senderJid, 'anti-flood (messages trop rapides)');
+        kickReasons.record(groupJid, senderPhoneJid, 'anti-flood (messages trop rapides)');
         const result = await moderationActions.kickMember(sock, groupJid, senderJid);
         if (!result.ok) await sock.sendMessage(groupJid, { text: result.reason });
       }
@@ -190,8 +195,14 @@ async function handleMessage(userId, sock, msg) {
   }
 
   // ── 5. Anti-bot : supprime les commandes destinées à d'autres bots ───────
+  // Important : parseCommand(text) renvoie un objet dès que le texte commence
+  // par "." — même si ce n'est PAS une commande reconnue d'Ultra Agent. On se
+  // base donc sur isKnownCommand (résultat réel de l'étape 1), pas sur un
+  // nouveau parsing, sinon aucun message en "." n'est jamais détecté comme
+  // étranger (c'était le bug : l'antibot ne se déclenchait quasiment jamais).
   if (group.antibot_enabled && !isAdmin && text) {
-    const isForeignBotCommand = /^[.!/#]\S/.test(text) && !commandHandler.parseCommand(text);
+    const looksLikeBotCommand = /^[.!/#]\S/.test(text);
+    const isForeignBotCommand = looksLikeBotCommand && !isKnownCommand;
     if (isForeignBotCommand) {
       const result = await moderationActions.deleteMessage(sock, groupJid, msg.key);
       if (result.ok) {
@@ -233,6 +244,8 @@ async function handleMessage(userId, sock, msg) {
           text: templates.sanctionMessage({ mentionText, current: count, max: maxWarnings }),
           mentions: [senderPhoneJid],
         });
+        kickReasons.record(groupJid, senderJid, reason);
+        kickReasons.record(groupJid, senderPhoneJid, reason);
         const result = await moderationActions.kickMember(sock, groupJid, senderJid);
         if (!result.ok) await sock.sendMessage(groupJid, { text: result.reason });
       }
@@ -364,6 +377,8 @@ async function handleMessage(userId, sock, msg) {
           text: templates.sanctionMessage({ mentionText, current: action.newCount, max: group.max_warnings }),
           mentions: [senderPhoneJid],
         });
+        kickReasons.record(groupJid, senderJid, decision.reason || 'règlement non respecté (modération IA)');
+        kickReasons.record(groupJid, senderPhoneJid, decision.reason || 'règlement non respecté (modération IA)');
         const result = await moderationActions.kickMember(sock, groupJid, senderJid);
         if (!result.ok) await sock.sendMessage(groupJid, { text: result.reason });
       }
@@ -372,26 +387,62 @@ async function handleMessage(userId, sock, msg) {
 }
 
 /**
- * Envoie le message de bienvenue configuré (.bienvenue) aux nouveaux membres.
- * Appelé depuis l'event Baileys `group-participants-update` (action 'add').
+ * Gère les entrées ET sorties d'un groupe (event Baileys `group-participants-update`) :
+ * - 'add' → envoie le message de bienvenue configuré (.bienvenue) ;
+ * - 'remove' → enregistre le départ en mémoire de groupe, avec le motif s'il
+ *   est connu (expulsion déclenchée par Ultra Agent lui-même — voir
+ *   `src/moderation/kickReasons.js`) ou une estimation générique sinon
+ *   (WhatsApp ne fournit pas de motif natif pour un départ volontaire).
  */
 async function handleGroupParticipantsUpdate(userId, sock, update) {
-  const { id: groupJid, participants, action } = update || {};
-  if (action !== 'add' || !isGroupJid(groupJid) || !participants?.length) return;
+  const { id: groupJid, participants, action, author } = update || {};
+  if (!isGroupJid(groupJid) || !participants?.length) return;
 
   try {
     const group = groupStore.getOwnedGroup(userId, groupJid);
-    if (!group || !group.enabled || !group.welcome_enabled) return;
+    if (!group || !group.enabled) return;
 
-    const groupName = await groupMeta.getGroupName(sock, groupJid);
-    for (const rawJid of participants) {
-      const phoneJid = await resolveToPhoneJid(sock, rawJid);
-      const mentionText = `@${jidToPhone(phoneJid)}`;
-      const text = templates.welcomeMessage({ mentionText, groupName, customMessage: group.welcome_message });
-      await sock.sendMessage(groupJid, { text, mentions: [phoneJid] });
+    if (action === 'add') {
+      if (!group.welcome_enabled) return;
+      const groupName = await groupMeta.getGroupName(sock, groupJid);
+      for (const rawJid of participants) {
+        const phoneJid = await resolveToPhoneJid(sock, rawJid);
+        const mentionText = `@${jidToPhone(phoneJid)}`;
+        const text = templates.welcomeMessage({ mentionText, groupName, customMessage: group.welcome_message });
+        await sock.sendMessage(groupJid, { text, mentions: [phoneJid] });
+      }
+      return;
+    }
+
+    if (action === 'remove') {
+      for (const rawJid of participants) {
+        const phoneJid = await resolveToPhoneJid(sock, rawJid);
+        const name = jidToPhone(phoneJid);
+
+        // Le motif d'un kick déclenché par Ultra Agent lui-même a été
+        // enregistré juste avant l'appel à kickMember — on le récupère s'il
+        // existe (sous les deux formats de JID possibles).
+        const reason = kickReasons.consume(groupJid, rawJid) || kickReasons.consume(groupJid, phoneJid);
+
+        let content;
+        if (reason) {
+          content = `${name} a été retiré du groupe — motif : ${reason}.`;
+        } else if (author && jidToPhone(author) !== jidToPhone(phoneJid)) {
+          content = `${name} a été retiré du groupe par un administrateur (motif non communiqué par WhatsApp).`;
+        } else {
+          content = `${name} a quitté le groupe de lui-même.`;
+        }
+
+        memoryManager.appendMessage(
+          userId,
+          groupJid,
+          { id: `leave-${Date.now()}-${name}`, userId: phoneJid, name, type: 'system', content, timestamp: Date.now() },
+          group.memory_limit
+        );
+      }
     }
   } catch (err) {
-    logger.warn({ groupJid, err: err.message }, 'Échec envoi message de bienvenue');
+    logger.warn({ groupJid, err: err.message }, 'Échec traitement group-participants-update');
   }
 }
 
