@@ -11,6 +11,12 @@ function warn(groupJid, userId, memberJid, maxWarnings) {
   return { count, limitReached: count >= maxWarnings, maxWarnings };
 }
 
+/** Passe directement au seuil max (ex: .warn @membre direct → équivaut à 3 signalements d'un coup). */
+function warnDirect(groupJid, userId, memberJid, maxWarnings) {
+  const count = db.setWarningCount(groupJid, userId, memberJid, maxWarnings);
+  return { count, limitReached: count >= maxWarnings, maxWarnings };
+}
+
 function unwarn(groupJid, userId, memberJid) {
   const current = db.getWarning(groupJid, userId, memberJid).count || 0;
   if (current <= 0) return { count: 0 };
@@ -30,4 +36,4 @@ function list(groupJid, userId) {
   return db.listWarnings(groupJid, userId).map((w) => ({ memberJid: w.member_jid, count: w.count }));
 }
 
-module.exports = { warn, unwarn, reset, get, list };
+module.exports = { warn, warnDirect, unwarn, reset, get, list };
