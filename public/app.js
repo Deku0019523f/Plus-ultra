@@ -28,8 +28,32 @@
       },
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `Erreur ${res.status}`);
+    if (!res.ok) {
+      const err = new Error(data.error || `Erreur ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
     return data;
+  }
+
+  /**
+   * Comme api(), mais s'auto-répare si la clé stockée localement ne
+   * correspond plus à un compte en base (401 "Clé API invalide/manquante") :
+   * efface le cache, ré-enregistre un nouveau compte, puis retente UNE fois.
+   * Évite qu'une clé périmée ne bloque tout le site indéfiniment.
+   */
+  async function apiAuth(path, options = {}) {
+    try {
+      return await api(path, options);
+    } catch (err) {
+      if (err.status !== 401) throw err;
+      localStorage.removeItem('ultraAgentApiKey');
+      localStorage.removeItem('ultraAgentUserId');
+      apiKey = null;
+      userId = null;
+      await ensureAccount();
+      return api(path, options);
+    }
   }
 
   async function ensureAccount() {
@@ -82,7 +106,7 @@
 
   async function refreshStatus() {
     try {
-      const status = await api('/status');
+      const status = await apiAuth('/status');
       renderStatus(status);
       return status;
     } catch (err) {
@@ -114,7 +138,7 @@
     submitBtn.textContent = 'Génération...';
 
     try {
-      const { pairingCode } = await api('/pairing', {
+      const { pairingCode } = await apiAuth('/pairing', {
         method: 'POST',
         body: JSON.stringify({ phoneNumber }),
       });
@@ -138,7 +162,7 @@
   async function loadGroups() {
     const grid = $('#groupGrid');
     try {
-      const { groups } = await api('/groups');
+      const { groups } = await apiAuth('/groups');
       if (!groups.length) {
         grid.innerHTML = '<div class="empty-state">Aucun groupe trouvé pour ce compte WhatsApp.</div>';
         return;
@@ -185,7 +209,7 @@
     showView('groupe-detail');
 
     try {
-      const detail = await api(`/groups/${encodeURIComponent(groupJid)}`);
+      const detail = await apiAuth(`/groups/${encodeURIComponent(groupJid)}`);
       renderDetail(detail);
     } catch {
       // Pas encore activé : le groupe n'existe pas en base tant que .plus_ultra
@@ -194,7 +218,7 @@
     }
 
     try {
-      const stats = await api(`/groups/${encodeURIComponent(groupJid)}/stats`);
+      const stats = await apiAuth(`/groups/${encodeURIComponent(groupJid)}/stats`);
       renderMemory(stats);
     } catch {
       renderMemory({ current: 0, limit: 1000, archives: 0 });
@@ -221,7 +245,7 @@
   $('#detailEnable').addEventListener('click', async () => {
     if (!currentGroupJid) return;
     try {
-      await api(`/groups/${encodeURIComponent(currentGroupJid)}/enable`, { method: 'POST' });
+      await apiAuth(`/groups/${encodeURIComponent(currentGroupJid)}/enable`, { method: 'POST' });
       toast('Groupe activé ✅');
       openGroupDetail(currentGroupJid, $('#detailName').textContent);
     } catch (err) {
@@ -232,7 +256,7 @@
   $('#detailDisable').addEventListener('click', async () => {
     if (!currentGroupJid) return;
     try {
-      await api(`/groups/${encodeURIComponent(currentGroupJid)}/disable`, { method: 'POST' });
+      await apiAuth(`/groups/${encodeURIComponent(currentGroupJid)}/disable`, { method: 'POST' });
       toast('Groupe désactivé');
       openGroupDetail(currentGroupJid, $('#detailName').textContent);
     } catch (err) {
