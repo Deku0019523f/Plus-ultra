@@ -50,7 +50,7 @@ async function handleCommand(ctx) {
   const ADMIN_COMMANDS = new Set([
     '.plus_ultra', '.plus_ultra_off', '.lien', '.warn', '.unwarn', '.reglement',
     '.mute', '.unmute', '.kick', '.antispam', '.blacklist', '.lien_reset', '.lien_tous',
-    '.antimedia', '.tagall', '.bienvenue', '.antibot', '.vocal',
+    '.antimedia', '.tagall', '.bienvenue', '.antibot', '.antibot_prefixes', '.vocal',
   ]);
   if (ADMIN_COMMANDS.has(cmd) && !isAdmin) {
     await reply(sock, groupJid, ADMIN_ONLY_MSG);
@@ -100,6 +100,9 @@ async function handleCommand(ctx) {
     case '.antibot':
       await cmdAntibot(ctx);
       return true;
+    case '.antibot_prefixes':
+      await cmdAntibotPrefixes(ctx);
+      return true;
     case '.blacklist':
       await cmdBlacklist(ctx);
       return true;
@@ -119,6 +122,7 @@ async function handleCommand(ctx) {
       await cmdRefreshRules(ctx);
       return true;
     case '.status':
+    case '.statut':
       await cmdStatus(ctx);
       return true;
     case '.help':
@@ -346,6 +350,17 @@ async function cmdAntimedia({ sock, userId, groupJid, parsed }) {
   );
 }
 
+async function cmdAntibotPrefixes({ sock, userId, groupJid, parsed }) {
+  const chars = parsed.args.join('').trim();
+  if (!chars) {
+    const group = groupStore.getOwnedGroup(userId, groupJid);
+    await reply(sock, groupJid, `Préfixes anti-bot actuels : "${group?.antibot_prefixes || '.!/#'}"\n\nUsage : .antibot_prefixes <caractères collés, ex: .!/#+-%>`);
+    return;
+  }
+  groupStore.updateSettings(userId, groupJid, { antibotPrefixes: chars });
+  await reply(sock, groupJid, `🤖 Préfixes anti-bot mis à jour : "${chars}"`);
+}
+
 async function cmdAntibot({ sock, userId, groupJid, parsed }) {
   const value = parsed.args[0]?.toLowerCase();
   if (value !== 'on' && value !== 'off') {
@@ -514,13 +529,14 @@ function commandsListText() {
     `*.antispam* on|off — anti-flood (admin)\n` +
     `*.antimedia* on|off — bloque images/vidéos/stickers (admin)\n` +
     `*.antibot* on|off — supprime les commandes destinées à d'autres bots (admin)\n` +
+    `*.antibot_prefixes* <car.> — personnalise les préfixes détectés, ex: .!/#+-% (admin)\n` +
     `*.blacklist* ajouter|retirer|liste <mot> — mots interdits (admin)\n` +
     `*.tagall* [message] — mentionne tous les membres (admin)\n` +
     `*.info* — infos du groupe\n` +
     `*.bienvenue* on|off [message] — message d'accueil auto (admin)\n` +
     `*.vocal* on|off|defaut — réponses IA en vocal ou texte (admin)\n` +
     `*.reglement* — actualise le règlement (admin)\n` +
-    `*.status* — affiche l'état de l'agent\n` +
+    `*.status* (ou *.statut*) — affiche l'état de l'agent\n` +
     `*.help* — affiche ce message`
   );
 }
