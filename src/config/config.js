@@ -65,7 +65,10 @@ module.exports = {
   },
 
   moderation: {
-    maxWarnings: parseInt(process.env.MAX_WARNINGS, 10) || 3,
+    // Seuil général (antibot, anti-spam, anti-média, liste noire, .warn manuel, modération IA).
+    maxWarnings: parseInt(process.env.MAX_WARNINGS, 10) || 5,
+    // Seuil spécifique aux liens non autorisés — reste plus strict par défaut.
+    linkMaxWarnings: parseInt(process.env.MAX_LINK_WARNINGS, 10) || 3,
   },
 
   // Délai aléatoire avant l'envoi d'une réponse conversationnelle de l'agent,
