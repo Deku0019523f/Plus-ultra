@@ -2,6 +2,7 @@
 
 const groqClient = require('./groqClient');
 const { buildAgentSystemPrompt, truncate, MAX_USER_MESSAGE_CHARS } = require('./prompts');
+const { commandsListText } = require('../commands/commandHandler');
 const config = require('../config/config');
 const logger = require('../utils/logger');
 
@@ -16,6 +17,7 @@ async function generateReply({ groupName, rules, userName, relevantMessages, use
     rules,
     userName,
     relevantMessages,
+    commandsList: commandsListText(),
   });
 
   try {

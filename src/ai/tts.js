@@ -17,6 +17,22 @@ const execFileAsync = promisify(execFile);
 const MAX_CHUNK_LEN = 200;
 const TTS_LANG = 'fr';
 
+/**
+ * Retire les marqueurs de formatage WhatsApp (*gras*, _italique_, ~barré~,
+ * `code`) avant la synthèse — sinon Google TTS les prononce/laisse tels
+ * quels dans le vocal ("étoile", caractères bruts...), ce qui n'a aucun sens
+ * à l'oral. Les listes à puces "- " sont aussi aplaties en simple pause.
+ */
+function stripWhatsAppFormatting(text) {
+  return (text || '')
+    .replace(/[*_~`]/g, '')
+    .replace(/^\s*[-•]\s+/gm, '')
+    .replace(/\n{2,}/g, '. ')
+    .replace(/\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function splitIntoChunks(text) {
   const sentences = text.replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s+/);
   const chunks = [];
@@ -62,7 +78,8 @@ async function fetchChunkAudio(chunk, index, total) {
  * appelant pour retomber sur une réponse texte).
  */
 async function synthesizeFrench(text) {
-  const chunks = splitIntoChunks(text || '');
+  const clean = stripWhatsAppFormatting(text);
+  const chunks = splitIntoChunks(clean);
   if (!chunks.length) return null;
   const buffers = [];
   for (let i = 0; i < chunks.length; i++) {
