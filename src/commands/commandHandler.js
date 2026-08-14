@@ -144,7 +144,7 @@ async function cmdActivate({ sock, userId, groupJid }) {
     `🟢 ULTRA AGENT ACTIVÉ\n\n` +
       `🛡️ Modération : ACTIVÉE\n` +
       `🔗 Anti-liens : ${group.anti_link_enabled ? 'ACTIVÉ' : 'DÉSACTIVÉ'}\n` +
-      `⚠️ Avertissements : ${group.max_warnings}/${group.max_warnings}\n` +
+      `⚠️ Avertissements : ${group.max_warnings} (général) / ${group.link_max_warnings} (liens)\n` +
       `🤖 IA : ${group.ai_enabled ? 'ACTIVÉE' : 'DÉSACTIVÉE'}\n` +
       `🎤 Analyse vocale : ACTIVÉE\n\n` +
       `Le règlement du groupe sera utilisé comme référence.\n` +
@@ -269,7 +269,13 @@ async function cmdListWarns({ sock, userId, groupJid, parsed }) {
     const memberJid = await resolveToPhoneJid(sock, rawMemberJid);
     const mention = await buildMention(sock, memberJid);
     const count = warnings.get(groupJid, userId, memberJid);
-    await reply(sock, groupJid, `⚠️ ${mention.text} : ${count}/${maxWarnings} avertissement(s).`, [mention.jid]);
+    const linkCount = warnings.get(groupJid, userId, memberJid, 'link');
+    await reply(
+      sock,
+      groupJid,
+      `⚠️ ${mention.text} : ${count}/${maxWarnings} avertissement(s) général(aux), ${linkCount}/${group?.link_max_warnings ?? config.moderation.linkMaxWarnings} (liens).`,
+      [mention.jid]
+    );
     return;
   }
 
@@ -508,7 +514,7 @@ async function cmdStatus({ sock, userId, groupJid }) {
       `🖼️ Anti-média : ${group.antimedia_enabled ? 'ON' : 'OFF'}\n` +
       `🤖 Anti-bot : ${group.antibot_enabled ? 'ON' : 'OFF'}\n` +
       `👋 Bienvenue : ${group.welcome_enabled ? 'ON' : 'OFF'}\n` +
-      `⚠️ Avertissements max : ${group.max_warnings}\n` +
+      `⚠️ Avertissements max : ${group.max_warnings} (général) / ${group.link_max_warnings} (liens)\n` +
       `🧠 Mémoire : ${stats.current}/${stats.limit} messages (${stats.archives} archive(s))`
   );
 }
