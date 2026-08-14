@@ -36,6 +36,7 @@ function writeGroupConfigSnapshot(userId, groupJid) {
     aiEnabled: !!row.ai_enabled,
     antiLinkEnabled: !!row.anti_link_enabled,
     maxWarnings: row.max_warnings,
+    linkMaxWarnings: row.link_max_warnings,
     memoryLimit: row.memory_limit,
     rules: row.rules || '',
     antispamEnabled: !!row.antispam_enabled,
