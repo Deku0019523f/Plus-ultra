@@ -45,6 +45,7 @@ function writeGroupConfigSnapshot(userId, groupJid) {
     welcomeEnabled: !!row.welcome_enabled,
     welcomeMessage: row.welcome_message || '',
     antibotEnabled: !!row.antibot_enabled,
+    antibotPrefixes: row.antibot_prefixes || '.!/#',
     voiceEnabled: row.voice_enabled === null ? null : !!row.voice_enabled,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
