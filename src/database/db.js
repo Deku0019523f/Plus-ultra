@@ -225,6 +225,18 @@ function resetWarning(groupJid, userId, memberJid) {
   db.prepare('DELETE FROM warnings WHERE group_jid = ? AND user_id = ? AND member_jid = ?').run(groupJid, userId, memberJid);
 }
 
+/** Fixe le compteur d'avertissements à une valeur absolue (ex: .warn en mode direct → passe droit au seuil). */
+function setWarningCount(groupJid, userId, memberJid, count) {
+  const t = now();
+  const value = Math.max(0, count);
+  db.prepare(
+    `INSERT INTO warnings (group_jid, user_id, member_jid, count, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(group_jid, member_jid) DO UPDATE SET count = ?, updated_at = ?`
+  ).run(groupJid, userId, memberJid, value, t, value, t);
+  return value;
+}
+
 // ── Autorisations de liens (isolées par groupe) ──────────────────────────────
 function setLinkAuthorization(groupJid, userId, memberJid, maxLinks, authorizedBy) {
   const t = now();
@@ -350,6 +362,7 @@ module.exports = {
   getWarning,
   listWarnings,
   addWarning,
+  setWarningCount,
   resetWarning,
   setLinkAuthorization,
   getLinkAuthorization,
