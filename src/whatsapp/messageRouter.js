@@ -10,6 +10,7 @@ const linkAuth = require('../groups/linkAuth');
 const mutes = require('../groups/mutes');
 const blacklist = require('../groups/blacklist');
 const antiSpam = require('../moderation/antiSpam');
+const antibotWatch = require('../moderation/antibotWatch');
 const kickReasons = require('../moderation/kickReasons');
 const memoryManager = require('../memory/memoryManager');
 const groupMeta = require('./groupMeta');
@@ -205,21 +206,36 @@ async function handleMessage(userId, sock, msg) {
   // (!, /, #, +, -, %...) — aucune liste fixe ne peut toutes les couvrir.
   // Les stickers utilisés comme déclencheur sont couverts par .antimedia,
   // qui bloque déjà tout sticker envoyé par un non-admin.
-  if (group.antibot_enabled && !isAdmin && text) {
-    const prefixChars = (group.antibot_prefixes || '.!/#').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const botPrefixRe = new RegExp(`^[${prefixChars}]\\S`);
-    const looksLikeBotCommand = botPrefixRe.test(text);
-    const isForeignBotCommand = looksLikeBotCommand && !isKnownCommand;
-    if (isForeignBotCommand) {
+  if (group.antibot_enabled && !isAdmin) {
+    // Une commande étrangère vient d'être supprimée juste avant : on arme une
+    // courte fenêtre pour supprimer aussi SA réponse (généralement le tout
+    // premier message qui suit, envoyé par le compte du bot tiers). Ceci est
+    // une heuristique one-shot — si un vrai membre parle pile dans cette
+    // fenêtre, son message peut être supprimé par erreur ; c'est le
+    // compromis demandé pour couper court aux réponses des bots tiers.
+    if (antibotWatch.consume(groupJid, senderPhoneJid, text)) {
       const result = await moderationActions.deleteMessage(sock, groupJid, msg.key);
-      if (result.ok) {
-        const mentionText = `@${jidToPhone(senderPhoneJid)}`;
-        await sock.sendMessage(groupJid, {
-          text: templates.antibotDeletedMessage({ mentionText }),
-          mentions: [senderPhoneJid],
-        });
+      if (result.ok) return;
+      // suppression impossible (ex: message déjà supprimé) → on continue le pipeline normalement
+    }
+
+    if (text) {
+      const prefixChars = (group.antibot_prefixes || '.!/#').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const botPrefixRe = new RegExp(`^[${prefixChars}]\\S`);
+      const looksLikeBotCommand = botPrefixRe.test(text);
+      const isForeignBotCommand = looksLikeBotCommand && !isKnownCommand;
+      if (isForeignBotCommand) {
+        const result = await moderationActions.deleteMessage(sock, groupJid, msg.key);
+        if (result.ok) {
+          antibotWatch.arm(groupJid, senderPhoneJid);
+          const mentionText = `@${jidToPhone(senderPhoneJid)}`;
+          await sock.sendMessage(groupJid, {
+            text: templates.antibotDeletedMessage({ mentionText }),
+            mentions: [senderPhoneJid],
+          });
+        }
+        return;
       }
-      return;
     }
   }
 
@@ -261,6 +277,8 @@ async function handleMessage(userId, sock, msg) {
   }
 
   // ── 8. Anti-liens (déterministe, aucun appel IA) ─────────────────────────
+  // Seuil séparé et plus strict que les autres infractions (catégorie 'link',
+  // group.link_max_warnings — 3 par défaut, contre 5 pour tout le reste).
   if (group.anti_link_enabled && !isAdmin && text) {
     const linkCount = antiLink.countLinks(text);
     if (linkCount > 0) {
@@ -269,10 +287,29 @@ async function handleMessage(userId, sock, msg) {
         const result = await moderationActions.deleteMessage(sock, groupJid, msg.key);
         if (result.ok) {
           const mentionText = `@${jidToPhone(senderPhoneJid)}`;
-          await sock.sendMessage(groupJid, {
-            text: templates.linkDeniedMessage({ mentionText }),
-            mentions: [senderPhoneJid],
-          });
+          const linkMaxWarnings = group.link_max_warnings;
+          const { count, limitReached } = warnings.warn(groupJid, userId, senderPhoneJid, linkMaxWarnings, 'link');
+
+          if (!limitReached) {
+            await sock.sendMessage(groupJid, {
+              text: templates.warnMessage({
+                mentionText,
+                reason: "envoi d'un lien non autorisé",
+                current: count,
+                max: linkMaxWarnings,
+              }),
+              mentions: [senderPhoneJid],
+            });
+          } else {
+            await sock.sendMessage(groupJid, {
+              text: templates.sanctionMessage({ mentionText, current: count, max: linkMaxWarnings }),
+              mentions: [senderPhoneJid],
+            });
+            kickReasons.record(groupJid, senderJid, 'liens non autorisés (seuil atteint)');
+            kickReasons.record(groupJid, senderPhoneJid, 'liens non autorisés (seuil atteint)');
+            const kickResult = await moderationActions.kickMember(sock, groupJid, senderJid);
+            if (!kickResult.ok) await sock.sendMessage(groupJid, { text: kickResult.reason });
+          }
         }
         return; // message supprimé : on ne le mémorise pas, on ne le modère pas davantage
       }
