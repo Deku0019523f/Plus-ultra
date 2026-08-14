@@ -200,8 +200,15 @@ async function handleMessage(userId, sock, msg) {
   // base donc sur isKnownCommand (résultat réel de l'étape 1), pas sur un
   // nouveau parsing, sinon aucun message en "." n'est jamais détecté comme
   // étranger (c'était le bug : l'antibot ne se déclenchait quasiment jamais).
+  // Les préfixes sont configurables par groupe (.antibot_prefixes) car
+  // d'autres bots peuvent utiliser des préfixes différents des nôtres
+  // (!, /, #, +, -, %...) — aucune liste fixe ne peut toutes les couvrir.
+  // Les stickers utilisés comme déclencheur sont couverts par .antimedia,
+  // qui bloque déjà tout sticker envoyé par un non-admin.
   if (group.antibot_enabled && !isAdmin && text) {
-    const looksLikeBotCommand = /^[.!/#]\S/.test(text);
+    const prefixChars = (group.antibot_prefixes || '.!/#').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const botPrefixRe = new RegExp(`^[${prefixChars}]\\S`);
+    const looksLikeBotCommand = botPrefixRe.test(text);
     const isForeignBotCommand = looksLikeBotCommand && !isKnownCommand;
     if (isForeignBotCommand) {
       const result = await moderationActions.deleteMessage(sock, groupJid, msg.key);
