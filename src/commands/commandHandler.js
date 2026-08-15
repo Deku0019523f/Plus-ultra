@@ -11,6 +11,7 @@ const groupMeta = require('../whatsapp/groupMeta');
 const moderationActions = require('../whatsapp/moderationActions');
 const templates = require('../whatsapp/templates');
 const kickReasons = require('../moderation/kickReasons');
+const customCommands = require('./customCommands');
 const { parseDuration, formatUntil } = require('../moderation/duration');
 const { firstMentionedJid, jidToPhone, resolveToPhoneJid } = require('../utils/jid');
 const logger = require('../utils/logger');
@@ -129,8 +130,52 @@ async function handleCommand(ctx) {
       await cmdHelp(ctx);
       return true;
     default:
-      return false; // pas une commande connue → laisser le reste du pipeline traiter le message
+      return handleCustomCommand(ctx);
   }
+}
+
+/**
+ * Commandes personnalisées installées via Telegram (src/commands/custom/).
+ * Vérifiées APRÈS toutes les commandes natives — un upload ne peut jamais
+ * intercepter ni remplacer une commande native (voir RESERVED_NAMES).
+ */
+async function handleCustomCommand(ctx) {
+  const { sock, userId, groupJid, senderJid, isAdmin, parsed } = ctx;
+  const entry = customCommands.get(parsed.cmd);
+  if (!entry) return false; // vraiment inconnue → le reste du pipeline (antibot etc.) prend le relais
+
+  if (entry.adminOnly && !isAdmin) {
+    await reply(sock, groupJid, ADMIN_ONLY_MSG);
+    return true;
+  }
+
+  try {
+    await entry.handler({
+      sock,
+      userId,
+      groupJid,
+      senderJid,
+      isAdmin,
+      parsed,
+      // API mise à disposition pour écrire une commande sans avoir à connaître
+      // les chemins internes du projet.
+      reply: (text, mentions) => reply(sock, groupJid, text, mentions),
+      buildMention: (jid) => buildMention(sock, jid),
+      resolveMemberJid: (jid) => groupMeta.resolveGroupParticipantJid(sock, groupJid, jid),
+      groupStore,
+      warnings,
+      linkAuth,
+      mutes,
+      blacklist,
+      moderationActions,
+      groupMeta,
+      templates,
+    });
+  } catch (err) {
+    logger.error({ cmd: parsed.cmd, err: err.message }, 'Erreur dans une commande personnalisée');
+    await reply(sock, groupJid, `❌ Erreur dans la commande ${parsed.cmd} : ${err.message}`);
+  }
+  return true;
 }
 
 async function cmdActivate({ sock, userId, groupJid }) {
@@ -548,7 +593,11 @@ function commandsListText() {
 }
 
 async function cmdHelp({ sock, groupJid }) {
-  await reply(sock, groupJid, `🤖 COMMANDES — ${config.botName}\n\n${commandsListText()}`);
+  const custom = customCommands.list();
+  const customBlock = custom.length
+    ? `\n\n*Commandes personnalisées :*\n${custom.map((c) => `*${c.name}* — ${c.description}`).join('\n')}`
+    : '';
+  await reply(sock, groupJid, `🤖 COMMANDES — ${config.botName}\n\n${commandsListText()}${customBlock}`);
 }
 
 module.exports = { parseCommand, handleCommand, commandsListText };
