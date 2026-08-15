@@ -166,7 +166,7 @@ async function cmdAuthorizeLink({ sock, userId, groupJid, senderJid, parsed }) {
     return;
   }
 
-  const memberJid = await resolveToPhoneJid(sock, rawMemberJid);
+  const memberJid = await groupMeta.resolveGroupParticipantJid(sock, groupJid, rawMemberJid);
   linkAuth.authorize(groupJid, userId, memberJid, n, senderJid);
   const mention = await buildMention(sock, memberJid);
   await reply(sock, groupJid, `✅ ${mention.text} peut désormais envoyer ${n} lien(s) dans ce groupe.`, [mention.jid]);
@@ -178,7 +178,7 @@ async function cmdLienReset({ sock, userId, groupJid, parsed }) {
     await reply(sock, groupJid, 'Usage : .lien_reset @membre');
     return;
   }
-  const memberJid = await resolveToPhoneJid(sock, rawMemberJid);
+  const memberJid = await groupMeta.resolveGroupParticipantJid(sock, groupJid, rawMemberJid);
   const mention = await buildMention(sock, memberJid);
   const auth = linkAuth.resetUsage(groupJid, userId, memberJid);
   if (!auth) {
@@ -210,7 +210,7 @@ async function cmdWarn({ sock, userId, groupJid, senderJid, parsed }) {
     await reply(sock, groupJid, 'Usage : .warn @membre [raison] — ou .warn @membre direct pour bannir immédiatement (3 signalements d\'un coup)');
     return;
   }
-  const memberJid = await resolveToPhoneJid(sock, rawMemberJid);
+  const memberJid = await groupMeta.resolveGroupParticipantJid(sock, groupJid, rawMemberJid);
   const mention = await buildMention(sock, memberJid);
   const mentionToken = parsed.args.find((a) => a.startsWith('@'));
   const DIRECT_KEYWORDS = new Set(['direct', 'force', 'ban', 'banni']);
@@ -254,7 +254,7 @@ async function cmdUnwarn({ sock, userId, groupJid, parsed }) {
     await reply(sock, groupJid, 'Usage : .unwarn @membre');
     return;
   }
-  const memberJid = await resolveToPhoneJid(sock, rawMemberJid);
+  const memberJid = await groupMeta.resolveGroupParticipantJid(sock, groupJid, rawMemberJid);
   const mention = await buildMention(sock, memberJid);
   const { count } = warnings.unwarn(groupJid, userId, memberJid);
   await reply(sock, groupJid, `✅ Avertissement retiré : ${mention.text} est maintenant à ${count}.`, [mention.jid]);
@@ -266,7 +266,7 @@ async function cmdListWarns({ sock, userId, groupJid, parsed }) {
   const maxWarnings = group?.max_warnings || config.moderation.maxWarnings;
 
   if (rawMemberJid) {
-    const memberJid = await resolveToPhoneJid(sock, rawMemberJid);
+    const memberJid = await groupMeta.resolveGroupParticipantJid(sock, groupJid, rawMemberJid);
     const mention = await buildMention(sock, memberJid);
     const count = warnings.get(groupJid, userId, memberJid);
     const linkCount = warnings.get(groupJid, userId, memberJid, 'link');
@@ -294,7 +294,7 @@ async function cmdMute({ sock, userId, groupJid, senderJid, parsed }) {
     await reply(sock, groupJid, 'Usage : .mute @membre [durée] (ex: .mute @membre 30m)');
     return;
   }
-  const memberJid = await resolveToPhoneJid(sock, rawMemberJid);
+  const memberJid = await groupMeta.resolveGroupParticipantJid(sock, groupJid, rawMemberJid);
   const mention = await buildMention(sock, memberJid);
   const durationArg = parsed.args.find((a) => /^\d+[smhd]$/i.test(a));
   const durationMs = durationArg ? parseDuration(durationArg) : null;
@@ -310,7 +310,7 @@ async function cmdUnmute({ sock, userId, groupJid, parsed }) {
     await reply(sock, groupJid, 'Usage : .unmute @membre');
     return;
   }
-  const memberJid = await resolveToPhoneJid(sock, rawMemberJid);
+  const memberJid = await groupMeta.resolveGroupParticipantJid(sock, groupJid, rawMemberJid);
   const mention = await buildMention(sock, memberJid);
   mutes.unmute(groupJid, userId, memberJid);
   await reply(sock, groupJid, `🔊 ${mention.text} peut de nouveau parler.`, [mention.jid]);
