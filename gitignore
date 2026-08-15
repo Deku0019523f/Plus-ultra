@@ -1,0 +1,15 @@
+node_modules/
+data/
+!data/.gitkeep
+.env
+logs/
+*.log
+.DS_Store
+
+# Commandes personnalisees installees a chaud via Telegram directement sur le
+# VPS (pas destinees a etre versionnees depuis le poste local) - seuls les
+# .gitkeep restent trackes pour que les dossiers existent apres un clone.
+src/commands/custom/*.js
+src/commands/custom/.backups/*
+!src/commands/custom/.gitkeep
+!src/commands/custom/.backups/.gitkeep
