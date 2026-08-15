@@ -12,6 +12,7 @@ const blacklist = require('../groups/blacklist');
 const antiSpam = require('../moderation/antiSpam');
 const antibotWatch = require('../moderation/antibotWatch');
 const kickReasons = require('../moderation/kickReasons');
+const customCommands = require('../commands/customCommands');
 const memoryManager = require('../memory/memoryManager');
 const groupMeta = require('./groupMeta');
 const moderationActions = require('./moderationActions');
@@ -164,6 +165,10 @@ async function handleMessage(userId, sock, msg) {
   // ── 2. Le groupe doit être activé pour tout le reste du pipeline ─────────
   const group = groupStore.getOwnedGroup(userId, groupJid);
   if (!group || !group.enabled) return;
+
+  // ── 2bis. Hooks personnalisés (ex: auto-like) — sur tout message, avant
+  //          toute modération, sans jamais pouvoir interrompre le pipeline. ──
+  await customCommands.runHooks({ sock, userId, groupJid, senderJid, senderPhoneJid, isAdmin, msg, message, text, group });
 
   // ── 3. Mute (silencieux : on supprime sans notifier à chaque fois) ───────
   if (!isAdmin && mutes.isMuted(groupJid, userId, senderPhoneJid)) {
