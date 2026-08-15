@@ -36,6 +36,10 @@ module.exports = {
 
   telegram: {
     botToken: process.env.TELEGRAM_BOT_TOKEN || '',
+    // Seul ce chat Telegram peut envoyer de nouvelles commandes personnalisées.
+    ownerChatId: process.env.TELEGRAM_OWNER_CHAT_ID || '',
+    // Code d'accès exigé en légende du fichier envoyé, en plus de l'ID ci-dessus.
+    uploadCode: process.env.TELEGRAM_UPLOAD_CODE || '',
   },
 
   botInfo: {
