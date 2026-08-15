@@ -125,11 +125,14 @@ async function handleMessage(userId, sock, msg) {
   const senderJid = msg.key.fromMe
     ? normalizeJid(sock.user?.id)
     : msg.key.participant || groupJid;
-  // Numéro canonique (résolu depuis un éventuel LID) : utilisé comme clé DB
-  // (liens/avertissements) et pour l'affichage @mention, afin que la même
-  // personne soit toujours reconnue quel que soit le format sous lequel
-  // WhatsApp présente l'expéditeur.
-  const senderPhoneJid = await resolveToPhoneJid(sock, senderJid);
+  // Identifiant canonique du membre DANS CE GROUPE : utilisé comme clé DB
+  // (liens/avertissements/mutes) et pour l'affichage @mention. On résout via
+  // la liste des participants du groupe (groupMeta), pas via le cache
+  // LID<->numéro de Baileys (resolveToPhoneJid) qui n'est pas toujours
+  // peuplé au bon moment — un décalage entre la clé utilisée à
+  // l'autorisation (.lien) et celle utilisée à l'envoi du message faisait
+  // ignorer des autorisations pourtant valides.
+  const senderPhoneJid = await groupMeta.resolveGroupParticipantJid(sock, groupJid, senderJid);
   const senderName = msg.pushName || jidToPhone(senderPhoneJid);
 
   const message = msg.message;
