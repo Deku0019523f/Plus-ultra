@@ -24,6 +24,10 @@ const RESERVED_NAMES = new Set([
 
 // name -> { handler, adminOnly, description, fileName }
 const registry = new Map();
+// fileName -> onMessage(ctx) — exécuté sur CHAQUE message qui survit à la
+// modération (pas les messages supprimés), pour les fonctionnalités type
+// "réagir automatiquement" plutôt que "répondre à une commande tapée".
+const messageHooks = new Map();
 
 function ensureDirs() {
   fs.mkdirSync(CUSTOM_DIR, { recursive: true });
@@ -70,14 +74,26 @@ function scanForRiskyApis(source) {
 /** Valide la forme exportée par le module (contrat attendu). */
 function validateShape(mod, expectedName) {
   if (!mod || typeof mod !== 'object') return 'Le fichier doit exporter un objet (module.exports = {...}).';
-  if (typeof mod.name !== 'string' || !mod.name.startsWith(config.commandPrefix)) {
-    return `"name" doit être une chaîne commençant par "${config.commandPrefix}".`;
+
+  if (typeof mod.name !== 'string' || !mod.name.trim()) {
+    return '"name" est obligatoire (identifiant unique, même pour un hook sans commande tapée).';
   }
   if (expectedName && mod.name !== expectedName) {
     return `"name" ("${mod.name}") ne correspond pas au nom annoncé ("${expectedName}").`;
   }
-  if (RESERVED_NAMES.has(mod.name)) return `"${mod.name}" est une commande native — ne peut pas être remplacée.`;
-  if (typeof mod.handler !== 'function') return '"handler" doit être une fonction async (ctx) => {...}.';
+  if (!mod.handler && !mod.onMessage) {
+    return 'Le fichier doit définir "handler" (commande tapée), "onMessage" (réagit à chaque message), ou les deux.';
+  }
+  if (mod.handler) {
+    if (!mod.name.startsWith(config.commandPrefix)) {
+      return `Pour une commande tapée, "name" doit commencer par "${config.commandPrefix}".`;
+    }
+    if (RESERVED_NAMES.has(mod.name)) return `"${mod.name}" est une commande native — ne peut pas être remplacée.`;
+    if (typeof mod.handler !== 'function') return '"handler" doit être une fonction async (ctx) => {...}.';
+  }
+  if (mod.onMessage && typeof mod.onMessage !== 'function') {
+    return '"onMessage" doit être une fonction async (ctx) => {...}.';
+  }
   return null;
 }
 
@@ -141,20 +157,38 @@ async function installFromSource(source, declaredName) {
   delete require.cache[require.resolve(finalPath)];
   const finalMod = require(finalPath);
 
-  registry.set(finalMod.name, {
-    handler: finalMod.handler,
-    adminOnly: finalMod.adminOnly !== false, // par défaut réservé aux admins, plus prudent
-    description: finalMod.description || '(pas de description)',
-    fileName,
-  });
+  const displayName = finalMod.name;
 
-  logger.info({ name: finalMod.name, replaced: !!backupPath }, 'Commande personnalisée installée');
+  if (finalMod.handler) {
+    registry.set(finalMod.name, {
+      handler: finalMod.handler,
+      adminOnly: finalMod.adminOnly !== false, // par défaut réservé aux admins, plus prudent
+      description: finalMod.description || '(pas de description)',
+      fileName,
+    });
+  } else {
+    registry.delete(displayName); // au cas où une version précédente avait un handler et plus celle-ci
+  }
+
+  if (finalMod.onMessage) {
+    messageHooks.set(fileName, {
+      name: displayName,
+      onMessage: finalMod.onMessage,
+      description: finalMod.description || '(pas de description)',
+      fileName,
+    });
+  } else {
+    messageHooks.delete(fileName);
+  }
+
+  logger.info({ name: displayName, replaced: !!backupPath, hasCommand: !!finalMod.handler, hasHook: !!finalMod.onMessage }, 'Commande personnalisée installée');
   return {
     ok: true,
-    name: finalMod.name,
+    name: displayName,
     hash: hashContent(source),
     replaced: !!backupPath,
     riskyApis,
+    hasHook: !!finalMod.onMessage,
   };
 }
 
@@ -173,12 +207,22 @@ function loadAllFromDisk() {
         logger.warn({ fileName, error: shapeError }, 'Commande personnalisée ignorée au démarrage (forme invalide)');
         continue;
       }
-      registry.set(mod.name, {
-        handler: mod.handler,
-        adminOnly: mod.adminOnly !== false,
-        description: mod.description || '(pas de description)',
-        fileName,
-      });
+      if (mod.handler) {
+        registry.set(mod.name, {
+          handler: mod.handler,
+          adminOnly: mod.adminOnly !== false,
+          description: mod.description || '(pas de description)',
+          fileName,
+        });
+      }
+      if (mod.onMessage) {
+        messageHooks.set(fileName, {
+          name: mod.name,
+          onMessage: mod.onMessage,
+          description: mod.description || '(pas de description)',
+          fileName,
+        });
+      }
       loaded++;
     } catch (err) {
       logger.warn({ fileName, err: err.message }, 'Échec chargement commande personnalisée au démarrage');
@@ -188,29 +232,56 @@ function loadAllFromDisk() {
   return loaded;
 }
 
+/** Liste combinée (commandes tapées + hooks), pour /commands. */
 function list() {
-  return [...registry.entries()].map(([name, c]) => ({ name, adminOnly: c.adminOnly, description: c.description }));
+  const seen = new Set();
+  const items = [];
+  for (const [name, c] of registry.entries()) {
+    seen.add(name);
+    items.push({ name, adminOnly: c.adminOnly, description: c.description, type: 'commande' });
+  }
+  for (const h of messageHooks.values()) {
+    if (seen.has(h.name)) continue; // déjà listé (même fichier avec les deux capacités)
+    items.push({ name: h.name, adminOnly: null, description: h.description, type: 'hook (chaque message)' });
+  }
+  return items;
 }
 
 function get(name) {
   return registry.get(name) || null;
 }
 
+/** Trouve le fileName associé à un name, dans registry OU messageHooks. */
+function findFileName(name) {
+  const cmd = registry.get(name);
+  if (cmd) return cmd.fileName;
+  for (const h of messageHooks.values()) {
+    if (h.name === name) return h.fileName;
+  }
+  return null;
+}
+
 async function remove(name) {
-  const entry = registry.get(name);
-  if (!entry) return false;
-  const filePath = path.join(CUSTOM_DIR, entry.fileName);
-  await backupExisting(entry.fileName);
+  const fileName = findFileName(name);
+  if (!fileName) return false;
+  const filePath = path.join(CUSTOM_DIR, fileName);
+  await backupExisting(fileName);
   await fsp.unlink(filePath).catch(() => {});
-  delete require.cache[require.resolve(filePath)] && require.resolve(filePath); // no-op safe
+  try {
+    delete require.cache[require.resolve(filePath)];
+  } catch {
+    // déjà absent du cache, rien à faire
+  }
   registry.delete(name);
+  for (const [key, h] of messageHooks.entries()) {
+    if (h.name === name) messageHooks.delete(key);
+  }
   return true;
 }
 
 /** Restaure la dernière sauvegarde d'une commande (annule le dernier envoi). */
 async function rollback(name) {
-  const entry = registry.get(name);
-  const fileName = entry ? entry.fileName : safeFileName(name);
+  const fileName = findFileName(name) || safeFileName(name);
   const backups = fs
     .readdirSync(BACKUPS_DIR)
     .filter((f) => f.endsWith(`__${fileName}`))
@@ -228,4 +299,20 @@ async function rollback(name) {
   return result;
 }
 
-module.exports = { installFromSource, loadAllFromDisk, list, get, remove, rollback, RESERVED_NAMES };
+/**
+ * Exécute tous les hooks "onMessage" pour un message donné. Chaque hook est
+ * isolé dans son propre try/catch : un hook qui plante ne doit jamais
+ * empêcher les autres de tourner, ni interrompre le traitement du message
+ * par le reste du pipeline.
+ */
+async function runHooks(ctx) {
+  for (const hook of messageHooks.values()) {
+    try {
+      await hook.onMessage(ctx);
+    } catch (err) {
+      logger.warn({ hook: hook.name, err: err.message }, 'Erreur dans un hook de commande personnalisée');
+    }
+  }
+}
+
+module.exports = { installFromSource, loadAllFromDisk, list, get, remove, rollback, runHooks, RESERVED_NAMES };
