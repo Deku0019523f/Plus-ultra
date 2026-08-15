@@ -5,8 +5,15 @@ const logger = require('./utils/logger');
 const server = require('./api/server');
 const sessionManager = require('./whatsapp/sessionManager');
 const telegramBot = require('./telegram/telegramBot');
+const customCommands = require('./commands/customCommands');
 
 async function main() {
+  try {
+    customCommands.loadAllFromDisk();
+  } catch (err) {
+    logger.error({ err: err.message }, 'Erreur au chargement des commandes personnalisées — le serveur continue');
+  }
+
   server.start();
 
   try {
