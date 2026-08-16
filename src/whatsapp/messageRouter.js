@@ -13,6 +13,8 @@ const antiSpam = require('../moderation/antiSpam');
 const antibotWatch = require('../moderation/antibotWatch');
 const kickReasons = require('../moderation/kickReasons');
 const customCommands = require('../commands/customCommands');
+const pendingLinkRequests = require('../moderation/pendingLinkRequests');
+const linkPermissionEngine = require('../moderation/linkPermissionEngine');
 const memoryManager = require('../memory/memoryManager');
 const groupMeta = require('./groupMeta');
 const moderationActions = require('./moderationActions');
@@ -299,13 +301,20 @@ async function handleMessage(userId, sock, msg) {
           const { count, limitReached } = warnings.warn(groupJid, userId, senderPhoneJid, linkMaxWarnings, 'link');
 
           if (!limitReached) {
+            // Si l'IA est active, on ouvre une fenêtre pour que le membre
+            // puisse se justifier directement auprès de l'agent (en
+            // répondant à ce message) plutôt que d'attendre un admin.
+            if (group.ai_enabled) pendingLinkRequests.open(groupJid, senderPhoneJid, antiLink.findLinks(text)[0] || text);
+            const baseWarn = templates.warnMessage({
+              mentionText,
+              reason: "envoi d'un lien non autorisé",
+              current: count,
+              max: linkMaxWarnings,
+            });
             await sock.sendMessage(groupJid, {
-              text: templates.warnMessage({
-                mentionText,
-                reason: "envoi d'un lien non autorisé",
-                current: count,
-                max: linkMaxWarnings,
-              }),
+              text: group.ai_enabled
+                ? `${baseWarn}\n\n💬 Tu peux répondre à ce message pour expliquer ton lien à l'agent et demander la permission.`
+                : baseWarn,
               mentions: [senderPhoneJid],
             });
           } else {
@@ -357,6 +366,36 @@ async function handleMessage(userId, sock, msg) {
     const mentioned = await botIsMentioned(sock, message);
     const repliedToBot = mentioned ? false : await isReplyToBot(sock, message);
     if (mentioned || repliedToBot) {
+      // Une demande de permission de lien est en cours pour ce membre : on
+      // route vers le moteur dédié plutôt que la conversation générale,
+      // tant qu'elle n'a pas abouti (accord, refus, ou expiration).
+      const pendingLink = pendingLinkRequests.get(groupJid, senderPhoneJid);
+      if (pendingLink) {
+        const decision = await linkPermissionEngine.evaluate({
+          rules: group.rules,
+          link: pendingLink.link,
+          memberMessage: effectiveText,
+          exchanges: pendingLink.exchanges,
+        });
+
+        const mentionText = `@${jidToPhone(senderPhoneJid)}`;
+        if (decision.decision === 'grant') {
+          linkAuth.authorize(groupJid, userId, senderPhoneJid, decision.linksAllowed, 'agent-ia');
+          pendingLinkRequests.close(groupJid, senderPhoneJid);
+          await sock.sendMessage(groupJid, {
+            text: `✅ ${mentionText} ${decision.reply}\n\n(${decision.linksAllowed} lien(s) autorisé(s) par l'agent)`,
+            mentions: [senderPhoneJid],
+          });
+        } else if (decision.decision === 'deny') {
+          pendingLinkRequests.close(groupJid, senderPhoneJid);
+          await sock.sendMessage(groupJid, { text: `${mentionText} ${decision.reply}`, mentions: [senderPhoneJid] });
+        } else {
+          pendingLinkRequests.bump(groupJid, senderPhoneJid);
+          await sock.sendMessage(groupJid, { text: `${mentionText} ${decision.reply}`, mentions: [senderPhoneJid] });
+        }
+        return;
+      }
+
       const relevantMessages = memoryManager.getRelevantContext(userId, groupJid, senderJid);
       const groupName = await groupMeta.getGroupName(sock, groupJid);
       const responseText = await agent.generateReply({
