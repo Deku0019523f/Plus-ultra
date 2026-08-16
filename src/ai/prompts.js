@@ -99,4 +99,33 @@ Si le message ne viole rien, réponds {"violation": false, "rule": "", "severity
 N'invente jamais une règle absente du règlement ou des règles système ci-dessus.`;
 }
 
-module.exports = { buildAgentSystemPrompt, buildModerationPrompt, formatContext, truncate, MAX_USER_MESSAGE_CHARS };
+/**
+ * Prompt de décision structurée pour une demande de permission de lien
+ * (§ voir linkPermissionEngine.js). L'IA ne fait jamais l'autorisation
+ * elle-même : elle rend une décision JSON que le code applicatif exécute.
+ */
+function buildLinkPermissionPrompt({ rules, link, memberMessage }) {
+  return `Tu évalues une demande de permission pour poster un lien dans un groupe WhatsApp, STRICTEMENT selon le règlement fourni. Tu ne fais qu'évaluer — tu n'accordes rien toi-même, c'est un système externe qui applique ta décision.
+
+RÈGLEMENT DU GROUPE :
+${rules?.trim() || '(aucun règlement défini pour ce groupe)'}
+
+LIEN CONCERNÉ :
+${link}
+
+MESSAGE DU MEMBRE (sa justification ou réponse à ta dernière question) :
+${memberMessage}
+
+Instructions :
+- Si tu as assez d'informations pour juger de la conformité du lien au règlement, décide "grant" (autorisé) ou "deny" (refusé) ;
+- si une information te manque pour juger correctement, décide "ask_more" et pose UNE SEULE question courte et précise ;
+- sois strict envers ce qui ressemble à du spam, de la pub non sollicitée, un lien d'invitation vers un autre groupe/canal, ou hors-sujet par rapport au règlement ;
+- sois raisonnable envers un lien manifestement légitime et cohérent avec l'objet du groupe ;
+- ne te justifie jamais en inventant une règle qui n'est pas dans le règlement ci-dessus ;
+- le champ "reply" est le message envoyé tel quel au membre : reste bref, naturel, en français.
+
+Réponds STRICTEMENT en JSON, sans aucun texte autour :
+{"decision": "grant" | "ask_more" | "deny", "linksAllowed": <entier 1 à 5, uniquement si decision="grant">, "reply": "<message au membre>"}`;
+}
+
+module.exports = { buildAgentSystemPrompt, buildModerationPrompt, buildLinkPermissionPrompt, formatContext, truncate, MAX_USER_MESSAGE_CHARS };
