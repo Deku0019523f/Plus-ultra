@@ -104,11 +104,17 @@ N'invente jamais une règle absente du règlement ou des règles système ci-des
  * (§ voir linkPermissionEngine.js). L'IA ne fait jamais l'autorisation
  * elle-même : elle rend une décision JSON que le code applicatif exécute.
  */
-function buildLinkPermissionPrompt({ rules, link, memberMessage }) {
-  return `Tu évalues une demande de permission pour poster un lien dans un groupe WhatsApp, STRICTEMENT selon le règlement fourni. Tu ne fais qu'évaluer — tu n'accordes rien toi-même, c'est un système externe qui applique ta décision.
+function buildLinkPermissionPrompt({ groupName, rules, relevantMessages, link, memberMessage }) {
+  return `Tu évalues une demande de permission pour poster un lien dans un groupe WhatsApp, STRICTEMENT selon le règlement et le sujet du groupe fournis ci-dessous. Tu ne fais qu'évaluer — tu n'accordes rien toi-même, c'est un système externe qui applique ta décision.
+
+NOM DU GROUPE :
+${groupName || '(inconnu)'}
 
 RÈGLEMENT DU GROUPE :
 ${rules?.trim() || '(aucun règlement défini pour ce groupe)'}
+
+CONTEXTE RÉCENT DU GROUPE (pour comprendre le sujet réel, qui peut être plus large que le règlement écrit) :
+${formatContext(relevantMessages)}
 
 LIEN CONCERNÉ :
 ${link}
@@ -117,11 +123,12 @@ MESSAGE DU MEMBRE (sa justification ou réponse à ta dernière question) :
 ${memberMessage}
 
 Instructions :
-- Si tu as assez d'informations pour juger de la conformité du lien au règlement, décide "grant" (autorisé) ou "deny" (refusé) ;
+- le nom du groupe et le contexte récent font pleinement partie du "sujet" à respecter, pas seulement le règlement écrit — un lien cohérent avec le nom/thème du groupe (ex: un groupe "Hackers Academy" et un lien de cours de hacking) est a priori ON-topic, même si le règlement ne le mentionne pas explicitement ;
+- si tu as assez d'informations pour juger de la conformité du lien, décide "grant" (autorisé) ou "deny" (refusé) ;
 - si une information te manque pour juger correctement, décide "ask_more" et pose UNE SEULE question courte et précise ;
-- sois strict envers ce qui ressemble à du spam, de la pub non sollicitée, un lien d'invitation vers un autre groupe/canal, ou hors-sujet par rapport au règlement ;
-- sois raisonnable envers un lien manifestement légitime et cohérent avec l'objet du groupe ;
-- ne te justifie jamais en inventant une règle qui n'est pas dans le règlement ci-dessus ;
+- sois strict envers ce qui ressemble à du spam, de la pub non sollicitée, un lien d'invitation vers un autre groupe/canal, ou manifestement hors-sujet ;
+- sois raisonnable envers un lien cohérent avec le sujet du groupe ;
+- ne te justifie jamais en inventant une règle qui n'est pas dans le règlement ni cohérente avec le sujet du groupe ;
 - le champ "reply" est le message envoyé tel quel au membre : reste bref, naturel, en français.
 
 Réponds STRICTEMENT en JSON, sans aucun texte autour :
