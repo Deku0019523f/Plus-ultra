@@ -147,7 +147,7 @@ async function resolveLinkPermission({ sock, userId, groupJid, senderJid, sender
     linkAuth.authorize(groupJid, userId, senderPhoneJid, decision.linksAllowed, 'agent-ia');
     pendingLinkRequests.close(groupJid, senderPhoneJid);
     await sock.sendMessage(groupJid, {
-      text: `✅ ${mentionText} ${decision.reply}\n\n(${decision.linksAllowed} lien(s) autorisé(s) par l'agent)`,
+      text: `✅ ${mentionText} ${decision.reply}\n\n(${decision.linksAllowed} lien(s) autorisé(s) — tu peux renvoyer ton lien maintenant.)`,
       mentions: [senderPhoneJid],
     });
   } else if (decision.decision === 'deny') {
@@ -337,9 +337,14 @@ async function handleMessage(userId, sock, msg) {
     const linkCount = antiLink.countLinks(text);
     if (linkCount > 0) {
       // Demande proactive : lien envoyé en mentionnant l'agent ou en réponse
-      // à lui -> jamais supprimé, jamais compté comme infraction. Traité
-      // directement comme une demande de permission auprès de l'IA.
+      // à lui -> jamais compté comme infraction (pas d'avertissement, pas de
+      // risque de sanction), mais le message est quand même supprimé
+      // immédiatement pour ne PAS laisser le lien visible du groupe pendant
+      // que l'IA l'évalue (sinon la demande ne sert à rien : le lien est
+      // déjà exposé, autorisé ou non). S'il est accordé, la personne doit
+      // renvoyer son lien — il passera alors normalement, désormais autorisé.
       if (group.ai_enabled && (mentionedBot || repliedToBotFlag)) {
+        await moderationActions.deleteMessage(sock, groupJid, msg.key);
         const link = antiLink.findLinks(text)[0] || text;
         pendingLinkRequests.open(groupJid, senderPhoneJid, link);
         await resolveLinkPermission({
