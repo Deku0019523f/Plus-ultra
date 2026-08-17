@@ -9,6 +9,9 @@ const config = require('../config/config');
 const logger = require('../utils/logger');
 const db = require('../database/db');
 const sessionManager = require('../whatsapp/sessionManager');
+const groupStore = require('../groups/groupStore');
+const groupMeta = require('../whatsapp/groupMeta');
+const memoryManager = require('../memory/memoryManager');
 const customCommands = require('../commands/customCommands');
 
 let bot = null;
@@ -58,7 +61,10 @@ async function handleStart(chatId) {
       `\`/connect +225XXXXXXXXXX\`\n\n` +
       `Autres commandes :\n` +
       `/status — voir l'état de ta connexion WhatsApp\n` +
-      `/disconnect — déconnecter ton WhatsApp`,
+      `/disconnect — déconnecter ton WhatsApp\n` +
+      `/groups — liste tes groupes WhatsApp\n` +
+      `/group_toggle <nom> — active/désactive un groupe\n` +
+      `/group_stats <nom> — statistiques d'un groupe`,
     { parse_mode: 'Markdown' }
   );
 }
@@ -256,6 +262,139 @@ async function handleRollback(chatId, name) {
   await bot.sendMessage(chatId, `↩️ *${result.name}* restaurée à sa version précédente.`, { parse_mode: 'Markdown' });
 }
 
+/** Trouve LE groupe (parmi ceux où le compte participe) dont le nom contient la recherche. */
+async function findGroupByQuery(sock, query) {
+  const participating = await sock.groupFetchAllParticipating();
+  const all = Object.values(participating);
+  const q = query.trim().toLowerCase();
+  const matches = all.filter((g) => (g.subject || '').toLowerCase().includes(q));
+  return { matches, all };
+}
+
+async function handleGroups(chatId) {
+  const user = db.getUserByTelegramChatId(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, "Aucun compte lié pour l'instant. Envoie /start pour commencer.");
+    return;
+  }
+  if (!sessionManager.isConnected(user.id)) {
+    await bot.sendMessage(chatId, 'Aucun compte WhatsApp connecté pour le moment.');
+    return;
+  }
+  try {
+    const sock = sessionManager.getSocket(user.id);
+    const participating = await sock.groupFetchAllParticipating();
+    const owned = db.listGroupsForUser(user.id);
+    const ownedByJid = new Map(owned.map((g) => [g.group_jid, g]));
+
+    const lines = Object.values(participating).map((g) => {
+      const stored = ownedByJid.get(g.id);
+      const status = stored?.enabled ? '🟢' : '⚪';
+      return `${status} *${g.subject}* — ${g.participants?.length || 0} membres`;
+    });
+    await bot.sendMessage(
+      chatId,
+      lines.length
+        ? `📋 Groupes (${lines.length}) :\n\n${lines.join('\n')}\n\n🟢 activé · ⚪ inactif\nUtilise /group_toggle <nom> ou /group_stats <nom> pour agir dessus.`
+        : "Aucun groupe trouvé pour ce compte.",
+      { parse_mode: 'Markdown' }
+    );
+  } catch (err) {
+    logger.error({ chatId, err: err.message }, 'Échec /groups Telegram');
+    await bot.sendMessage(chatId, `❌ Impossible de récupérer les groupes : ${err.message}`);
+  }
+}
+
+async function handleGroupToggle(chatId, query) {
+  const user = db.getUserByTelegramChatId(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, "Aucun compte lié pour l'instant.");
+    return;
+  }
+  if (!query) {
+    await bot.sendMessage(chatId, 'Usage : /group_toggle <nom ou partie du nom du groupe>');
+    return;
+  }
+  if (!sessionManager.isConnected(user.id)) {
+    await bot.sendMessage(chatId, 'Aucun compte WhatsApp connecté pour le moment.');
+    return;
+  }
+  try {
+    const sock = sessionManager.getSocket(user.id);
+    const { matches } = await findGroupByQuery(sock, query);
+    if (matches.length === 0) {
+      await bot.sendMessage(chatId, `Aucun groupe ne correspond à "${query}".`);
+      return;
+    }
+    if (matches.length > 1) {
+      await bot.sendMessage(chatId, `Plusieurs groupes correspondent, précise :\n${matches.map((g) => `• ${g.subject}`).join('\n')}`);
+      return;
+    }
+    const g = matches[0];
+    const stored = groupStore.getOwnedGroup(user.id, g.id);
+    if (stored?.enabled) {
+      groupStore.deactivateGroup(user.id, g.id);
+      await bot.sendMessage(chatId, `🔴 *${g.subject}* désactivé.`, { parse_mode: 'Markdown' });
+    } else {
+      const name = await groupMeta.getGroupName(sock, g.id);
+      const rules = await groupMeta.getGroupDescription(sock, g.id);
+      groupStore.activateGroup(user.id, g.id, { name, rules });
+      await bot.sendMessage(chatId, `🟢 *${g.subject}* activé.`, { parse_mode: 'Markdown' });
+    }
+  } catch (err) {
+    logger.error({ chatId, err: err.message }, 'Échec /group_toggle Telegram');
+    await bot.sendMessage(chatId, `❌ Erreur : ${err.message}`);
+  }
+}
+
+async function handleGroupStats(chatId, query) {
+  const user = db.getUserByTelegramChatId(chatId);
+  if (!user) {
+    await bot.sendMessage(chatId, "Aucun compte lié pour l'instant.");
+    return;
+  }
+  if (!query) {
+    await bot.sendMessage(chatId, 'Usage : /group_stats <nom ou partie du nom du groupe>');
+    return;
+  }
+  if (!sessionManager.isConnected(user.id)) {
+    await bot.sendMessage(chatId, 'Aucun compte WhatsApp connecté pour le moment.');
+    return;
+  }
+  try {
+    const sock = sessionManager.getSocket(user.id);
+    const { matches } = await findGroupByQuery(sock, query);
+    if (matches.length === 0) {
+      await bot.sendMessage(chatId, `Aucun groupe ne correspond à "${query}".`);
+      return;
+    }
+    if (matches.length > 1) {
+      await bot.sendMessage(chatId, `Plusieurs groupes correspondent, précise :\n${matches.map((g) => `• ${g.subject}`).join('\n')}`);
+      return;
+    }
+    const g = matches[0];
+    const stored = groupStore.getOwnedGroup(user.id, g.id);
+    if (!stored) {
+      await bot.sendMessage(chatId, `*${g.subject}* n'a jamais été activé — pas de statistiques.`, { parse_mode: 'Markdown' });
+      return;
+    }
+    const stats = memoryManager.getStats(user.id, g.id);
+    await bot.sendMessage(
+      chatId,
+      `📊 *${g.subject}*\n\n` +
+        `Statut : ${stored.enabled ? '🟢 activé' : '⚪ inactif'}\n` +
+        `IA : ${stored.ai_enabled ? 'ON' : 'OFF'}\n` +
+        `Anti-liens : ${stored.anti_link_enabled ? 'ON' : 'OFF'}\n` +
+        `Avertissements max : ${stored.max_warnings} (général) / ${stored.link_max_warnings} (liens)\n` +
+        `Mémoire : ${stats.current}/${stats.limit} messages (${stats.archives} archive(s))`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (err) {
+    logger.error({ chatId, err: err.message }, 'Échec /group_stats Telegram');
+    await bot.sendMessage(chatId, `❌ Erreur : ${err.message}`);
+  }
+}
+
 function start() {
   if (!config.telegram.botToken) {
     logger.info('TELEGRAM_BOT_TOKEN non défini — bot Telegram désactivé');
@@ -268,6 +407,9 @@ function start() {
   bot.onText(/^\/connect(?:\s+(.+))?$/, (msg, match) => handleConnect(msg.chat.id, match[1]?.trim()));
   bot.onText(/^\/status$/, (msg) => handleStatus(msg.chat.id));
   bot.onText(/^\/disconnect$/, (msg) => handleDisconnect(msg.chat.id));
+  bot.onText(/^\/groups$/, (msg) => handleGroups(msg.chat.id));
+  bot.onText(/^\/group_toggle(?:\s+(.+))?$/, (msg, match) => handleGroupToggle(msg.chat.id, match[1]?.trim()));
+  bot.onText(/^\/group_stats(?:\s+(.+))?$/, (msg, match) => handleGroupStats(msg.chat.id, match[1]?.trim()));
   bot.onText(/^\/commands$/, (msg) => handleListCommands(msg.chat.id));
   bot.onText(/^\/remove_command(?:\s+(\S+))?$/, (msg, match) => handleRemoveCommand(msg.chat.id, match[1]));
   bot.onText(/^\/rollback(?:\s+(\S+))?$/, (msg, match) => handleRollback(msg.chat.id, match[1]));
