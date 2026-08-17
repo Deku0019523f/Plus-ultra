@@ -33,7 +33,7 @@ function parseDecision(raw) {
  * elle-même — retourne une décision que l'appelant (messageRouter) exécute :
  * { decision: 'grant'|'ask_more'|'deny', linksAllowed, reply }.
  */
-async function evaluate({ rules, link, memberMessage, exchanges }) {
+async function evaluate({ groupName, rules, relevantMessages, link, memberMessage, exchanges }) {
   if (exchanges >= MAX_EXCHANGES) {
     return fallback(
       "Je n'ai pas assez d'éléments clairs pour autoriser ce lien — demande directement à un admin si tu penses que c'est légitime."
@@ -42,7 +42,7 @@ async function evaluate({ rules, link, memberMessage, exchanges }) {
 
   try {
     const { content } = await groqClient.chatComplete({
-      messages: [{ role: 'user', content: buildLinkPermissionPrompt({ rules, link, memberMessage }) }],
+      messages: [{ role: 'user', content: buildLinkPermissionPrompt({ groupName, rules, relevantMessages, link, memberMessage }) }],
       jsonMode: true,
       temperature: 0.3,
       maxTokens: 300,
