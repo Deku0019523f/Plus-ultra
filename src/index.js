@@ -1,6 +1,7 @@
 'use strict';
 
 require('./database/db'); // initialise le schéma SQLite au démarrage
+const config = require('./config/config');
 const logger = require('./utils/logger');
 const server = require('./api/server');
 const sessionManager = require('./whatsapp/sessionManager');
@@ -14,7 +15,11 @@ async function main() {
     logger.error({ err: err.message }, 'Erreur au chargement des commandes personnalisées — le serveur continue');
   }
 
-  server.start();
+  if (config.webEnabled) {
+    server.start();
+  } else {
+    logger.info('Serveur web désactivé (WEB_ENABLED=false) — Telegram est le seul point d\'accès.');
+  }
 
   try {
     telegramBot.start();
