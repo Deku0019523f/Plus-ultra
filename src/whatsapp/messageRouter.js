@@ -121,6 +121,44 @@ async function isReplyToBot(sock, message) {
   return jidIsBot(sock, ctx.participant, botCandidateIds(sock));
 }
 
+/**
+ * Fait évaluer une demande de permission de lien par l'IA et applique sa
+ * décision (grant/ask_more/deny) — utilisée aussi bien pour une demande
+ * proactive (lien envoyé en mentionnant l'agent, jamais compté comme
+ * infraction) que pour la suite d'une conversation ouverte après suppression
+ * d'un lien non autorisé.
+ */
+async function resolveLinkPermission({ sock, userId, groupJid, senderJid, senderPhoneJid, link, memberMessage, exchanges }) {
+  const relevantMessages = memoryManager.getRelevantContext(userId, groupJid, senderJid);
+  const groupName = await groupMeta.getGroupName(sock, groupJid);
+  const group = groupStore.getOwnedGroup(userId, groupJid);
+
+  const decision = await linkPermissionEngine.evaluate({
+    groupName,
+    rules: group?.rules,
+    relevantMessages,
+    link,
+    memberMessage,
+    exchanges,
+  });
+
+  const mentionText = `@${jidToPhone(senderPhoneJid)}`;
+  if (decision.decision === 'grant') {
+    linkAuth.authorize(groupJid, userId, senderPhoneJid, decision.linksAllowed, 'agent-ia');
+    pendingLinkRequests.close(groupJid, senderPhoneJid);
+    await sock.sendMessage(groupJid, {
+      text: `✅ ${mentionText} ${decision.reply}\n\n(${decision.linksAllowed} lien(s) autorisé(s) par l'agent)`,
+      mentions: [senderPhoneJid],
+    });
+  } else if (decision.decision === 'deny') {
+    pendingLinkRequests.close(groupJid, senderPhoneJid);
+    await sock.sendMessage(groupJid, { text: `${mentionText} ${decision.reply}`, mentions: [senderPhoneJid] });
+  } else {
+    pendingLinkRequests.bump(groupJid, senderPhoneJid);
+    await sock.sendMessage(groupJid, { text: `${mentionText} ${decision.reply}`, mentions: [senderPhoneJid] });
+  }
+}
+
 async function handleMessage(userId, sock, msg) {
   const groupJid = msg.key.remoteJid || '';
   if (!isGroupJid(groupJid)) return; // Ultra Agent ne traite que les groupes
@@ -287,11 +325,30 @@ async function handleMessage(userId, sock, msg) {
   }
 
   // ── 8. Anti-liens (déterministe, aucun appel IA) ─────────────────────────
+  // Calculé ici (une seule fois, réutilisé à l'étape 11) car un lien envoyé
+  // en mentionnant l'agent ou en réponse à lui est traité comme une demande
+  // directe, jamais comme une infraction.
+  const mentionedBot = await botIsMentioned(sock, message);
+  const repliedToBotFlag = mentionedBot ? false : await isReplyToBot(sock, message);
+
   // Seuil séparé et plus strict que les autres infractions (catégorie 'link',
   // group.link_max_warnings — 3 par défaut, contre 5 pour tout le reste).
   if (group.anti_link_enabled && !isAdmin && text) {
     const linkCount = antiLink.countLinks(text);
     if (linkCount > 0) {
+      // Demande proactive : lien envoyé en mentionnant l'agent ou en réponse
+      // à lui -> jamais supprimé, jamais compté comme infraction. Traité
+      // directement comme une demande de permission auprès de l'IA.
+      if (group.ai_enabled && (mentionedBot || repliedToBotFlag)) {
+        const link = antiLink.findLinks(text)[0] || text;
+        pendingLinkRequests.open(groupJid, senderPhoneJid, link);
+        await resolveLinkPermission({
+          sock, userId, groupJid, senderJid, senderPhoneJid,
+          link, memberMessage: text, exchanges: 0,
+        });
+        return;
+      }
+
       const { allowed } = linkAuth.consume(groupJid, userId, senderPhoneJid, linkCount);
       if (!allowed) {
         const result = await moderationActions.deleteMessage(sock, groupJid, msg.key);
@@ -313,7 +370,7 @@ async function handleMessage(userId, sock, msg) {
             });
             await sock.sendMessage(groupJid, {
               text: group.ai_enabled
-                ? `${baseWarn}\n\n💬 Tu peux répondre à ce message pour expliquer ton lien à l'agent et demander la permission.`
+                ? `${baseWarn}\n\n💬 Tu peux répondre à ce message pour expliquer ton lien à l'agent et demander la permission — ou mentionner l'agent AVANT d'envoyer un lien la prochaine fois pour lui demander sans risque.`
                 : baseWarn,
               mentions: [senderPhoneJid],
             });
@@ -363,36 +420,16 @@ async function handleMessage(userId, sock, msg) {
 
   // ── 11. Mention de l'agent → réponse conversationnelle ────────────────────
   if (group.ai_enabled) {
-    const mentioned = await botIsMentioned(sock, message);
-    const repliedToBot = mentioned ? false : await isReplyToBot(sock, message);
-    if (mentioned || repliedToBot) {
+    if (mentionedBot || repliedToBotFlag) {
       // Une demande de permission de lien est en cours pour ce membre : on
       // route vers le moteur dédié plutôt que la conversation générale,
       // tant qu'elle n'a pas abouti (accord, refus, ou expiration).
       const pendingLink = pendingLinkRequests.get(groupJid, senderPhoneJid);
       if (pendingLink) {
-        const decision = await linkPermissionEngine.evaluate({
-          rules: group.rules,
-          link: pendingLink.link,
-          memberMessage: effectiveText,
-          exchanges: pendingLink.exchanges,
+        await resolveLinkPermission({
+          sock, userId, groupJid, senderJid, senderPhoneJid,
+          link: pendingLink.link, memberMessage: effectiveText, exchanges: pendingLink.exchanges,
         });
-
-        const mentionText = `@${jidToPhone(senderPhoneJid)}`;
-        if (decision.decision === 'grant') {
-          linkAuth.authorize(groupJid, userId, senderPhoneJid, decision.linksAllowed, 'agent-ia');
-          pendingLinkRequests.close(groupJid, senderPhoneJid);
-          await sock.sendMessage(groupJid, {
-            text: `✅ ${mentionText} ${decision.reply}\n\n(${decision.linksAllowed} lien(s) autorisé(s) par l'agent)`,
-            mentions: [senderPhoneJid],
-          });
-        } else if (decision.decision === 'deny') {
-          pendingLinkRequests.close(groupJid, senderPhoneJid);
-          await sock.sendMessage(groupJid, { text: `${mentionText} ${decision.reply}`, mentions: [senderPhoneJid] });
-        } else {
-          pendingLinkRequests.bump(groupJid, senderPhoneJid);
-          await sock.sendMessage(groupJid, { text: `${mentionText} ${decision.reply}`, mentions: [senderPhoneJid] });
-        }
         return;
       }
 
