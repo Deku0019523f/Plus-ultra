@@ -15,6 +15,10 @@ function splitList(value, fallback) {
 
 module.exports = {
   port: parseInt(process.env.PORT, 10) || 3000,
+  // Coupe totalement le serveur web (site + API) : WEB_ENABLED=false dans
+  // .env. Le bot Telegram reste alors le seul point d'accès (connexion,
+  // gestion des groupes).
+  webEnabled: process.env.WEB_ENABLED !== 'false',
   nodeEnv: process.env.NODE_ENV || 'development',
   logLevel: process.env.LOG_LEVEL || 'info',
 
